@@ -1,14 +1,12 @@
-# secrets & credentials - never commit
 .env
+.dev.vars
 webauth
 *credentials*
 *.pem
 *.key
-
-# runtime
 *.log
 __pycache__/
 *.pyc
 node_modules/
 .wrangler/
-.dev.vars
+wrangler.toml

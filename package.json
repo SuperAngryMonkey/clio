@@ -1,0 +1,15 @@
+{
+  "name": "clio",
+  "version": "0.2.0",
+  "private": true,
+  "description": "GitHub popularity and activity reporting - Cloudflare Worker + D1",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply clio --remote",
+    "migrate:local": "wrangler d1 migrations apply clio --local"
+  },
+  "devDependencies": {
+    "wrangler": "^4.99.0"
+  }
+}

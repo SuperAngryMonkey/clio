@@ -1,53 +1,71 @@
-# Operations
+# Operations &mdash; Cloudflare
 
-## Services
+## Moving parts
 
-| Unit | Role |
+| Thing | Detail |
 |---|---|
-| `clio-collector.timer` | daily 06:15 UTC, 15-min jitter, `Persistent=true` |
-| `clio-collector.service` | oneshot sync |
-| `clio-web.service` | gunicorn, 2 workers, :8080, restart on failure |
+| Cron | `0 */3 * * *` — eight runs a day |
+| Slice size | `REPOS_PER_RUN` var, currently 7 |
+| Cursor | `sync_state` table, key `cursor` |
+| Full cycle | ceil(fleet / slice) runs — ~15h for 29 repos |
+| Run log | `sync_runs`, one row per invocation |
 
-`Persistent=true` matters: a host down at 06:15 runs the sync on next boot
-rather than skipping the day.
-
-## Routine checks
+## Checking health
 
 ```
-systemctl list-timers clio-collector.timer
-journalctl -u clio-collector -n 40 --no-pager
-psql -d clio -c "SELECT id,finished,ok,repos_synced,api_calls,error FROM sync_runs ORDER BY id DESC LIMIT 5"
+npx wrangler d1 execute clio --remote \
+  --command "SELECT id,finished,ok,repos_synced,api_calls,slice_from,slice_to,error \
+             FROM sync_runs ORDER BY id DESC LIMIT 5"
 ```
 
-`sync_runs.ok = false` with error text is the first place to look. `/healthz`
-is unauthenticated for external monitoring.
+A healthy slice: `ok=1`, `repos_synced` equal to the slice size, `api_calls` in
+the low 40s. `api_calls` at the 45 guard means the budget was exhausted and some
+repos were only partly collected — lower `REPOS_PER_RUN`.
 
-## Expected shape
+Live logs:
 
-~29 repos, ~150 API calls, under a minute. Rate limit is 5,000/hour
-authenticated, so the collector uses about 3% of budget per day.
+```
+npx wrangler tail
+```
+
+## Forcing a sync
+
+The dashboard footer link, or:
+
+```
+curl -X POST https://<hostname>/sync   # requires an Access session
+```
+
+Both advance the cursor by one slice.
 
 ## Failure modes
 
 | Symptom | Cause |
 |---|---|
-| `no GITHUB_TOKEN set` | `.env` missing or still placeholder |
-| widespread HTTP 403 | token lacks Administration:read, or org approval pending |
-| `UnicodeEncodeError` on insert | cluster is SQL_ASCII — see adr/0001 |
-| collector silently stops running | PAT expired; fine-grained tokens do expire |
+| `ok=0`, error mentions 401 | `GITHUB_TOKEN` secret missing or the PAT expired |
+| `ok=0`, repo list failed | token lacks Metadata:read, or org approval pending |
+| Widespread HTTP 403 in a slice | token lacks Administration:read |
+| MOST ACTIVE empty | `stats/commit_activity` still 202ing; fills next cycle |
+| `api_calls` pinned at 45 | slice too large for the subrequest budget |
+| Hostname 302s somewhere unexpected | a zone redirect rule is pre-empting the Worker |
+| No sync runs at all | cron not registered; re-deploy and check the trigger output |
 
-The last one is the trap. Nothing alerts on it — the timer keeps firing and the
-sync keeps failing. Check `sync_runs` after any token rotation.
+**Cron Triggers do not retry and do not alert.** A failed run is gone until the
+next tick, and nothing tells you. `sync_runs` is the only record. This is a real
+regression from systemd's `Persistent=true` on the LXC deployment — the
+mitigating factor is that the traffic API re-reports a rolling 14-day window, so
+a missed run self-heals on the next pass rather than losing data.
 
-## Rotating the dashboard password
+**PAT expiry is silent.** The timer keeps firing and every sync fails. Check
+`sync_runs` after any token rotation, and record the expiry date somewhere visible.
 
-```
-python3 -c "
-from werkzeug.security import generate_password_hash as h
-import getpass, os
-p = getpass.getpass('New password: ')
-open('/opt/clio/webauth','w').write('ghost:'+h(p)); os.chmod('/opt/clio/webauth',0o600)"
-chown clio:clio /opt/clio/webauth
-```
+## Free-plan ceilings
 
-Takes effect immediately; the app reads the file per request. No restart needed.
+| Limit | Value | Headroom |
+|---|---|---|
+| External subrequests / invocation | 50 | guard at 45, uses ~43 |
+| Requests / day | 100,000 | eight cron runs plus browsing |
+| D1 rows written / day | 100,000 | a few hundred |
+| Cron triggers | 5 per account | 1 used |
+
+The subrequest cap is the only one that constrains the design. See `adr/0003`.

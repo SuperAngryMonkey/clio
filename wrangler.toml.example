@@ -1,0 +1,35 @@
+# Copy to wrangler.toml and fill in. The real file is gitignored so a fork
+# does not inherit someone else's domain, account or database id.
+#
+#   cp wrangler.toml.example wrangler.toml
+#   npx wrangler d1 create clio      # paste the id below
+
+name = "clio"
+main = "src/index.js"
+
+# Custom domain. Creating this needs DNS edit on the zone; if the deploy fails on
+# permissions, attach it in the dashboard instead:
+#   Workers & Pages -> clio -> Settings -> Domains & Routes -> Add -> Custom Domain
+routes = [
+  { pattern = "clio.example.com", custom_domain = true }
+]
+compatibility_date = "2026-07-01"
+
+# Free plan allows 50 external subrequests per invocation. A full sync of ~29
+# repos needs ~150 GitHub calls, so the collector walks a slice per run and
+# keeps its place in the sync_state table. 8 repos x 5 calls + 1 list = 41.
+# A cron interval over one hour also grants the longer duration budget.
+[triggers]
+crons = ["0 */3 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clio"
+database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
+
+[vars]
+GITHUB_OWNER = "your-github-account-or-org"
+REPOS_PER_RUN = "7"
+
+# GITHUB_TOKEN is a secret, never a var:
+#   wrangler secret put GITHUB_TOKEN
