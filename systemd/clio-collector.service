@@ -1,0 +1,12 @@
+[Unit]
+Description=Clio collector - GitHub popularity + activity sync
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=clio
+WorkingDirectory=/opt/clio
+ExecStart=/usr/bin/python3 /opt/clio/collector.py
+StandardOutput=journal
+StandardError=journal

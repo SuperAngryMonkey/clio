@@ -1,0 +1,16 @@
+[Unit]
+Description=Clio web dashboard
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=clio
+WorkingDirectory=/opt/clio
+ExecStart=/usr/bin/gunicorn --bind 0.0.0.0:8080 --workers 2 --timeout 30 app:app
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

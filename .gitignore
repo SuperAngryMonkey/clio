@@ -1,0 +1,14 @@
+# secrets & credentials - never commit
+.env
+webauth
+*credentials*
+*.pem
+*.key
+
+# runtime
+*.log
+__pycache__/
+*.pyc
+node_modules/
+.wrangler/
+.dev.vars
