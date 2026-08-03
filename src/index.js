@@ -212,10 +212,111 @@ async function syncSlice(env) {
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// ---- time series rendering -------------------------------------------------
+// Days absent from the table are GAPS, not zeros: at REPOS_PER_RUN per 3h a full
+// fleet cycle takes ~1.5 days, so early per-repo rows are unevenly dense. A day
+// present with value 0 is a real zero and is drawn; a missing day breaks the line.
+
+function densify(rows, key, days) {
+  const m = new Map(rows.map((r) => [r.day, r[key]]));
+  return days.map((d) => (m.has(d) ? (m.get(d) ?? 0) : null));
+}
+
+function dayAxis(rows) {
+  if (!rows.length) return [];
+  const out = [];
+  const start = new Date(rows[0].day + "T00:00:00Z");
+  const end = new Date(rows[rows.length - 1].day + "T00:00:00Z");
+  for (let t = start; t <= end; t.setUTCDate(t.getUTCDate() + 1)) {
+    out.push(t.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+function chart(rows, commitRows) {
+  if (!rows.length) return '<div class="note">No time-series data yet &mdash; the collector needs at least one completed slice.</div>';
+  const days = dayAxis(rows);
+  const W = 940, H = 190, L = 34, R = 10, T = 12, B = 26;
+  const clones = densify(rows, "clones", days);
+  const views = densify(rows, "views", days);
+  const commits = densify(commitRows, "commits", days);
+  const vals = [...clones, ...views].filter((v) => v != null);
+  const max = Math.max(1, ...vals);
+  const n = days.length;
+  const x = (i) => L + (i * (W - L - R)) / Math.max(n - 1, 1);
+  const y = (v) => H - B - (v / max) * (H - T - B);
+
+  const path = (arr) => {
+    let d = "", pen = false;
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i] == null) { pen = false; continue; }
+      d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(arr[i]).toFixed(1) + " ";
+      pen = true;
+    }
+    return d.trim();
+  };
+
+  // area under clones, drawn per contiguous run so gaps stay gaps
+  let area = "", run = [];
+  const flush = () => {
+    if (run.length > 1) {
+      area += `<path d="M${x(run[0]).toFixed(1)} ${(H - B).toFixed(1)} ` +
+        run.map((i) => `L${x(i).toFixed(1)} ${y(clones[i]).toFixed(1)}`).join(" ") +
+        ` L${x(run[run.length - 1]).toFixed(1)} ${(H - B).toFixed(1)} Z" fill="#ff6b35" opacity=".10"/>`;
+    }
+    run = [];
+  };
+  clones.forEach((v, i) => { if (v == null) flush(); else run.push(i); });
+  flush();
+
+  const grid = [0, 0.5, 1].map((f) => {
+    const gy = (H - B - f * (H - T - B)).toFixed(1);
+    return `<line x1="${L}" y1="${gy}" x2="${W - R}" y2="${gy}" stroke="#1e1e26" stroke-width="1"/>` +
+      `<text x="${L - 6}" y="${(+gy + 3).toFixed(1)}" fill="#4e4e5c" font-size="9" text-anchor="end">${Math.round(f * max)}</text>`;
+  }).join("");
+
+  const step = Math.max(1, Math.ceil(n / 12));
+  const xl = days.map((d, i) => (i % step === 0 || i === n - 1)
+    ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" fill="#4e4e5c" font-size="9" text-anchor="middle">${d.slice(5)}</text>` : "").join("");
+
+  const cmax = Math.max(1, ...commits.filter((v) => v != null));
+  const cbars = commits.map((v, i) => {
+    if (!v) return "";
+    const bh = (v / cmax) * 16;
+    return `<rect x="${(x(i) - 1.5).toFixed(1)}" y="${(H - B - bh).toFixed(1)}" width="3" height="${bh.toFixed(1)}" fill="#00ff88" opacity=".45"/>`;
+  }).join("");
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Daily fleet clones, views and commits over time" style="display:block">
+${grid}${cbars}${area}
+<path d="${path(views)}" fill="none" stroke="#00d4ff" stroke-width="1.6" stroke-dasharray="4 3" stroke-linejoin="round"/>
+<path d="${path(clones)}" fill="none" stroke="#ff6b35" stroke-width="1.8" stroke-linejoin="round"/>
+${xl}</svg>
+<div class="note"><span style="color:#ff6b35">&#9644;</span> clones &nbsp; <span style="color:#00d4ff">&#9644;</span> views (dashed) &nbsp; <span style="color:#00ff88">&#9644;</span> commits (bars, own scale, peak ${cmax}) &nbsp;&middot;&nbsp; ${days.length} days, ${rows.length} with data</div>`;
+}
+
+function spark(rows, days) {
+  if (!rows || rows.length < 2) return "";
+  const W = 74, H = 16;
+  const arr = densify(rows, "clones", days);
+  const max = Math.max(1, ...arr.filter((v) => v != null));
+  const n = days.length;
+  let d = "", pen = false;
+  for (let i = 0; i < n; i++) {
+    if (arr[i] == null) { pen = false; continue; }
+    const px = ((i * W) / Math.max(n - 1, 1)).toFixed(1);
+    const py = (H - 2 - (arr[i] / max) * (H - 4)).toFixed(1);
+    d += (pen ? "L" : "M") + px + " " + py + " ";
+    pen = true;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="vertical-align:middle" aria-hidden="true"><path d="${d.trim()}" fill="none" stroke="#ff6b35" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
+}
+
 function page(d) {
   const maxc = Math.max(1, ...d.traffic.map((t) => t.clones || 0));
   const maxa = Math.max(1, ...d.active.map((a) => a.commits || 0));
+  const sdays = dayAxis(d.series);
   const row = (t) => `<tr><td>${esc(t.name)}${t.private ? ' <span class="tag">priv</span>' : ""}</td>
+<td style="width:80px">${spark(d.spark[t.name], sdays)}</td>
 <td style="width:38%"><span class="bar" style="background:#ff6b35;width:${(t.clones / maxc) * 100}%"></span>
 <span class="bar" style="background:#00d4ff;width:${(t.views / maxc) * 100}%"></span></td>
 <td class="num" style="color:#ff6b35">${t.clones}</td><td class="num" style="color:#6a6a78">${t.peak_clone_uniq ?? 0}</td>
@@ -262,8 +363,11 @@ td{padding:5px 8px 5px 0;border-bottom:1px solid #15151b}
 <div class="tile"><div class="k">STARS</div><div class="v" style="color:#ff6b35">${d.inv.stars ?? 0}</div></div>
 <div class="tile"><div class="k">FORKS</div><div class="v">${d.inv.forks ?? 0}</div></div>
 </div>
+<h2>ACTIVITY &mdash; ${d.seriesDays}d</h2>
+${chart(d.series, d.commitSeries)}
+<div class="note">GitHub keeps 14 days and discards the rest; everything left of that line exists only here. Gaps are gaps, not zeros &mdash; a day with no row was never collected.</div>
 <h2>HOT &mdash; 14 day window</h2>
-<table><tr><th>repo</th><th></th><th class="num">clones</th><th class="num">peak/day</th><th class="num">views</th><th class="num">peak/day</th></tr>
+<table><tr><th>repo</th><th>trend</th><th></th><th class="num">clones</th><th class="num">peak/day</th><th class="num">views</th><th class="num">peak/day</th></tr>
 ${d.traffic.map(row).join("")}</table>
 <div class="note">Peak/day is the highest single-day unique count, never a sum &mdash; GitHub reports uniques per period, so adding daily values double-counts anything that returns.</div>
 <h2>REFERRERS</h2>
@@ -312,6 +416,28 @@ export default {
     // Manual trigger. Behind the Access check, so only an authenticated session
     // can advance the cursor. GET redirects back to the dashboard so it works as
     // a plain link; POST returns JSON for scripting.
+    // Machine-readable daily series. Uniques are returned per-day only; never
+    // sum them across days (see docs/adr/0002) -- peak-per-day is the honest
+    // aggregate because GitHub reports uniques per period.
+    if (url.pathname === "/api/series") {
+      const n = Math.min(365, Math.max(1, parseInt(url.searchParams.get("days") || "90", 10) || 90));
+      const repo = url.searchParams.get("repo");
+      const q = repo
+        ? env.DB.prepare(`SELECT t.day, t.views, t.views_unique, t.clones, t.clones_unique
+              FROM traffic_daily t JOIN repos r ON r.repo_id=t.repo_id
+              WHERE r.name = ? AND t.day > date('now','-' || ? || ' days')
+              ORDER BY t.day`).bind(repo, n)
+        : env.DB.prepare(`SELECT day, sum(views) views, max(views_unique) peak_views_unique,
+                sum(clones) clones, max(clones_unique) peak_clones_unique
+              FROM traffic_daily WHERE day > date('now','-' || ? || ' days')
+              GROUP BY day ORDER BY day`).bind(n);
+      const { results } = await q.all();
+      return Response.json({
+        scope: repo || "fleet", days: n, note: "uniques are per-day; do not sum",
+        series: results,
+      });
+    }
+
     if (url.pathname === "/sync") {
       const res = await syncSlice(env);
       if (request.method === "POST") return Response.json(res);
@@ -319,7 +445,8 @@ export default {
     }
 
     const db = env.DB;
-    const [inv, traffic, referrers, active, cold, run, fleet] = await Promise.all([
+    const seriesDays = 90;
+    const [inv, traffic, referrers, active, cold, run, fleet, series, commitSeries, sparkRows] = await Promise.all([
       db.prepare(`SELECT count(*) total,
             sum(CASE WHEN private=0 THEN 1 ELSE 0 END) pub,
             sum(CASE WHEN private=1 THEN 1 ELSE 0 END) priv,
@@ -347,12 +474,25 @@ export default {
           ORDER BY pushed_at LIMIT 8`).all(),
       db.prepare("SELECT * FROM sync_runs WHERE finished IS NOT NULL ORDER BY id DESC LIMIT 1").first(),
       db.prepare("SELECT v FROM sync_state WHERE k='fleet_size'").first(),
+      db.prepare(`SELECT day, sum(views) views, sum(clones) clones
+          FROM traffic_daily WHERE day > date('now','-' || ? || ' days')
+          GROUP BY day ORDER BY day`).bind(seriesDays).all(),
+      db.prepare(`SELECT day, sum(commits) commits
+          FROM commits_daily WHERE day > date('now','-' || ? || ' days')
+          GROUP BY day HAVING sum(commits) > 0 ORDER BY day`).bind(seriesDays).all(),
+      db.prepare(`SELECT r.name, t.day, t.clones
+          FROM traffic_daily t JOIN repos r ON r.repo_id=t.repo_id
+          WHERE t.day > date('now','-30 days') ORDER BY t.day`).all(),
     ]);
+
+    const spark = {};
+    for (const r of sparkRows.results) (spark[r.name] ||= []).push({ day: r.day, clones: r.clones });
 
     return new Response(page({
       inv: inv || {}, traffic: traffic.results, referrers: referrers.results,
       active: active.results, cold: cold.results, run, user: email,
       perRun: env.REPOS_PER_RUN || "8", fleet: fleet?.v ?? "?",
+      series: series.results, commitSeries: commitSeries.results, spark, seriesDays,
     }), { headers: { "content-type": "text/html;charset=utf-8" } });
   },
 };
