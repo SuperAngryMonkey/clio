@@ -12,3 +12,6 @@ __pycache__/
 node_modules/
 .wrangler/
 .dev.vars
+
+# local deploy config - contains D1 database id
+wrangler.toml
