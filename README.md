@@ -6,6 +6,11 @@ GitHub popularity and activity reporting for a repo fleet, as a single Cloudflar
 Worker. Named for the Muse of history: it does not do the work, it records what
 was done.
 
+**It runs entirely on Cloudflare's free tier, and is designed to.** No paid plan,
+no card on file, no server. The free-tier ceilings are not incidental here — the
+50-subrequest cap is the reason the collector is chunked rather than a simple
+loop. See [Free tier](#free-tier).
+
 This is the `cloudflare` branch. For the Debian/LXC deployment — Postgres,
 systemd, Flask — see `main`.
 
@@ -32,6 +37,81 @@ devDependency.
 These are deliberately separate. Popularity only means anything for public repos
 with an audience; activity applies to all of them. For a single-operator fleet
 the activity panel is usually the one worth reading.
+
+## Free tier
+
+Everything below is the Workers **Free** plan plus the Zero Trust **Free** plan.
+Total cost of running this: nothing, indefinitely. Cloudflare has committed to
+keeping a free D1 tier. The only thing you pay for is a domain, and Clio works
+on a `workers.dev` subdomain if you would rather not have one.
+
+### What the free plan gives you
+
+| Limit | Free | What Clio does |
+|---|---|---|
+| Worker requests | 100,000/day | ~8 cron runs/day + dashboard loads |
+| CPU per invocation | 10 ms | string-building only; no parsing, no crypto |
+| **External subrequests per invocation** | **50** | **the binding constraint — see below** |
+| Cron Triggers | 5 per account | 1 |
+| Workers | 100 per account | 1 |
+| D1 databases | 10 per account | 1 |
+| D1 database size | 500 MB | ~200 KB after a month of a 30-repo fleet |
+| D1 storage per account | 5 GB | as above |
+| D1 rows read | 5,000,000/day | hundreds |
+| D1 rows written | 100,000/day | low hundreds |
+| D1 Time Travel | 7 days | free point-in-time recovery |
+| Zero Trust users | 50 | 1 |
+| Zero Trust log retention | 24 hours | — |
+
+Daily counters reset at 00:00 UTC. Exceeding a Worker limit returns error 1027;
+exceeding a D1 daily limit makes queries fail until reset; filling D1 storage
+blocks inserts and schema changes until you delete something.
+
+### The 50-subrequest cap is the whole design
+
+A Worker on the free plan may make **50 external subrequests per invocation**.
+Paid plans get 10,000. Every GitHub API call is one subrequest, and a full fleet
+sync needs roughly five calls per repo — repo metadata, views, clones,
+referrers, paths — so a 30-repo fleet is about 150 calls. Three times over the
+ceiling.
+
+Rather than upgrade, the collector processes a **slice** of the fleet per run
+and keeps a cursor in `sync_state`. `REPOS_PER_RUN` sets the slice; a `Budget`
+guard aborts at 45 calls so a retry or a `202` from GitHub's stats endpoints
+cannot push a run over the edge. Cron fires every 3 hours, so the fleet is
+walked in `fleet_size / REPOS_PER_RUN` runs — for 30 repos at 7 per run, about
+half a day.
+
+This is why per-repo daily rows can be sparse in the first days after deploying,
+and why the charts draw gaps rather than zeros. The sparseness is the free tier
+showing through the data. It is a fair trade: the alternative is $5/month for a
+dashboard one person reads.
+
+### Two things to keep an eye on
+
+**D1 queries per invocation.** Cloudflare's D1 limits page lists *queries per
+Worker invocation* as 50 on Free against 1000 on Paid, while the Workers
+changelog describes free-plan Workers as limited to 50 *external* subrequests
+and 1000 to Cloudflare services. The docs are in tension, so treat 50 as the
+number to design against. The dashboard currently issues 10 D1 queries per page
+load. There is room, but it is not unlimited — count your queries before adding
+another panel.
+
+**10 ms of CPU.** Waiting on `fetch()` and D1 does not count; only your own
+computation does. Chart generation is the CPU-heaviest thing here, and it is
+string concatenation over at most a few hundred points. If you widen the window
+far beyond 90 days or render a panel per repo, this is the limit that bites
+first, and it fails as error 1102 rather than a slow page.
+
+### Where the free tier does bite
+
+- **No alerting.** Nothing tells you when a cron run fails; you check
+  `sync_runs` or you do not know. This is a gap in Clio, not in Cloudflare.
+- **24-hour Access logs.** Who reached the dashboard last week is not
+  answerable after a day.
+- **7-day Time Travel** instead of 30. Restoring D1 to a point before last week
+  is not an option, so treat the GitHub API as the real source of truth for the
+  last 14 days and Clio as the only source beyond that.
 
 ## Time series
 
