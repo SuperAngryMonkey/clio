@@ -15,7 +15,8 @@ systemd, Flask — see `main`.
 |---|---|
 | Collector | Worker `scheduled()`, Cron Trigger every 3h |
 | Storage | D1 (SQLite) |
-| Dashboard | Worker `fetch()`, server-rendered HTML |
+| Dashboard | Worker `fetch()`, server-rendered HTML, inline SVG charts |
+| JSON API | `GET /api/series` for the daily series |
 | Auth | Cloudflare Access in front of the Worker |
 | Secrets | `GITHUB_TOKEN` as a Worker secret |
 
@@ -26,10 +27,53 @@ devDependency.
 
 - **Hot** — views, clones, referrers and popular paths per repo, 14-day window
 - **Fleet** — commits and staleness across every repo, public and private
+- **Activity** — the same numbers as a daily series, for as far back as Clio has been running
 
 These are deliberately separate. Popularity only means anything for public repos
 with an audience; activity applies to all of them. For a single-operator fleet
 the activity panel is usually the one worth reading.
+
+## Time series
+
+GitHub's traffic API returns a rolling 14-day window and keeps nothing older.
+Clio upserts each day into `traffic_daily` keyed `(repo_id, day)`, so history
+accumulates from the day you deploy it. Past the first fortnight, the chart is
+showing you data that no longer exists anywhere else.
+
+The **Activity** panel plots daily clones (area and line), views (dashed) and
+commits (bars, on their own scale) over 90 days. Each row of the **Hot** table
+carries a 30-day clone sparkline. Charts are inline SVG generated in the Worker
+— no chart library, no CDN, nothing to fail behind Access.
+
+### Gaps are gaps
+
+The collector walks a slice of the fleet per run, so a full cycle takes roughly
+`fleet_size / REPOS_PER_RUN` runs — over a day for a large fleet. Days with no
+row were never collected and render as a break in the line. A day present with
+value `0` is a real zero and is drawn as one. Nothing is interpolated.
+
+### Never sum uniques
+
+GitHub reports unique cloners and visitors *per period*, so adding daily values
+double-counts anyone who came back. Every unique figure here is per-day, and
+fleet-level aggregates report peak-per-day rather than a total. See
+`docs/adr/0002`.
+
+### `GET /api/series`
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `days` | `90` | window length, 1&ndash;365 |
+| `repo` | *(none)* | repo name; omit for fleet-wide totals |
+
+```
+curl https://YOUR-HOST/api/series?days=30
+curl https://YOUR-HOST/api/series?days=30&repo=some-repo
+```
+
+Fleet scope returns `views`, `clones`, `peak_views_unique` and
+`peak_clones_unique` per day. Repo scope returns that repo's raw daily rows.
+Behind Access like everything else, so a script needs a service token.
 
 ## Quick start
 
