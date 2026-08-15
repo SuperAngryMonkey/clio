@@ -236,87 +236,92 @@ function dayAxis(rows) {
 function chart(rows, commitRows) {
   if (!rows.length) return '<div class="note">No time-series data yet &mdash; the collector needs at least one completed slice.</div>';
   const days = dayAxis(rows);
-  const W = 940, H = 190, L = 34, R = 10, T = 12, B = 26;
-  const clones = densify(rows, "clones", days);
-  const views = densify(rows, "views", days);
-  const commits = densify(commitRows, "commits", days);
-  const vals = [...clones, ...views].filter((v) => v != null);
-  const max = Math.max(1, ...vals);
   const n = days.length;
+  const W = 940, L = 34, R = 10;
   const x = (i) => L + (i * (W - L - R)) / Math.max(n - 1, 1);
-  const y = (v) => H - B - (v / max) * (H - T - B);
 
-  const path = (arr) => {
-    let d = "", pen = false;
-    for (let i = 0; i < arr.length; i++) {
-      if (arr[i] == null) { pen = false; continue; }
+  // Small multiples: one panel per series, each with its own y-scale, sharing a
+  // single x-axis. A shared y would let one 93-view day flatten a 27-clone surge
+  // into the floor. Dual-axis is not the answer -- two scales on one frame invite
+  // the reader to compare heights that are not comparable.
+  const panel = (arr, opt) => {
+    const H = opt.h, T = 10, B = 14;
+    const vals = arr.filter((v) => v != null);
+    const max = Math.max(1, ...vals);
+    const y = (v) => H - B - (v / max) * (H - T - B);
+    let d = "", pen = false, area = "", run = [];
+    const flushArea = () => {
+      if (opt.area && run.length > 1) {
+        area += `<path d="M${x(run[0]).toFixed(1)} ${(H - B).toFixed(1)} ` +
+          run.map((i) => `L${x(i).toFixed(1)} ${y(arr[i]).toFixed(1)}`).join(" ") +
+          ` L${x(run[run.length - 1]).toFixed(1)} ${(H - B).toFixed(1)} Z" fill="${opt.color}" opacity=".10"/>`;
+      }
+      run = [];
+    };
+    for (let i = 0; i < n; i++) {
+      if (arr[i] == null) { pen = false; flushArea(); continue; }
       d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(arr[i]).toFixed(1) + " ";
-      pen = true;
+      pen = true; run.push(i);
     }
-    return d.trim();
+    flushArea();
+    const grid = [0, 1].map((f) => {
+      const gy = (H - B - f * (H - T - B)).toFixed(1);
+      return `<line x1="${L}" y1="${gy}" x2="${W - R}" y2="${gy}" stroke="#1e1e26" stroke-width="1"/>` +
+        `<text x="${L - 6}" y="${(+gy + 3).toFixed(1)}" fill="#4e4e5c" font-size="9" text-anchor="end">${Math.round(f * max)}</text>`;
+    }).join("");
+    const bars = opt.bars ? arr.map((v, i) => v
+      ? `<rect x="${(x(i) - 1.5).toFixed(1)}" y="${y(v).toFixed(1)}" width="3" height="${(H - B - y(v)).toFixed(1)}" fill="${opt.color}" opacity=".55"/>`
+      : "").join("") : "";
+    const line = opt.bars ? "" :
+      `<path d="${d.trim()}" fill="none" stroke="${opt.color}" stroke-width="${opt.w || 1.8}"${opt.dash ? ' stroke-dasharray="4 3"' : ""} stroke-linejoin="round"/>`;
+    return `<div style="margin-bottom:2px"><div style="font-size:10px;color:${opt.color};letter-spacing:.08em;padding-left:${L}px">${opt.label} &middot; peak ${max}</div>
+<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${opt.label} per day, peak ${max}" style="display:block">${grid}${area}${bars}${line}</svg></div>`;
   };
-
-  // area under clones, drawn per contiguous run so gaps stay gaps
-  let area = "", run = [];
-  const flush = () => {
-    if (run.length > 1) {
-      area += `<path d="M${x(run[0]).toFixed(1)} ${(H - B).toFixed(1)} ` +
-        run.map((i) => `L${x(i).toFixed(1)} ${y(clones[i]).toFixed(1)}`).join(" ") +
-        ` L${x(run[run.length - 1]).toFixed(1)} ${(H - B).toFixed(1)} Z" fill="#ff6b35" opacity=".10"/>`;
-    }
-    run = [];
-  };
-  clones.forEach((v, i) => { if (v == null) flush(); else run.push(i); });
-  flush();
-
-  const grid = [0, 0.5, 1].map((f) => {
-    const gy = (H - B - f * (H - T - B)).toFixed(1);
-    return `<line x1="${L}" y1="${gy}" x2="${W - R}" y2="${gy}" stroke="#1e1e26" stroke-width="1"/>` +
-      `<text x="${L - 6}" y="${(+gy + 3).toFixed(1)}" fill="#4e4e5c" font-size="9" text-anchor="end">${Math.round(f * max)}</text>`;
-  }).join("");
 
   const step = Math.max(1, Math.ceil(n / 12));
-  const xl = days.map((d, i) => (i % step === 0 || i === n - 1)
-    ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" fill="#4e4e5c" font-size="9" text-anchor="middle">${d.slice(5)}</text>` : "").join("");
+  const axis = `<svg viewBox="0 0 ${W} 16" width="100%" aria-hidden="true" style="display:block">` +
+    days.map((d, i) => (i % step === 0 || i === n - 1)
+      ? `<text x="${x(i).toFixed(1)}" y="11" fill="#4e4e5c" font-size="9" text-anchor="middle">${d.slice(5)}</text>` : "").join("") +
+    `</svg>`;
 
-  const cmax = Math.max(1, ...commits.filter((v) => v != null));
-  const cbars = commits.map((v, i) => {
-    if (!v) return "";
-    const bh = (v / cmax) * 16;
-    return `<rect x="${(x(i) - 1.5).toFixed(1)}" y="${(H - B - bh).toFixed(1)}" width="3" height="${bh.toFixed(1)}" fill="#00ff88" opacity=".45"/>`;
-  }).join("");
-
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Daily fleet clones, views and commits over time" style="display:block">
-${grid}${cbars}${area}
-<path d="${path(views)}" fill="none" stroke="#00d4ff" stroke-width="1.6" stroke-dasharray="4 3" stroke-linejoin="round"/>
-<path d="${path(clones)}" fill="none" stroke="#ff6b35" stroke-width="1.8" stroke-linejoin="round"/>
-${xl}</svg>
-<div class="note"><span style="color:#ff6b35">&#9644;</span> clones &nbsp; <span style="color:#00d4ff">&#9644;</span> views (dashed) &nbsp; <span style="color:#00ff88">&#9644;</span> commits (bars, own scale, peak ${cmax}) &nbsp;&middot;&nbsp; ${days.length} days, ${rows.length} with data</div>`;
+  return panel(densify(rows, "clones", days), { label: "CLONES", color: "#ff6b35", h: 96, area: true }) +
+    panel(densify(rows, "views", days), { label: "VIEWS", color: "#00d4ff", h: 84, dash: true, w: 1.6 }) +
+    panel(densify(commitRows, "commits", days), { label: "COMMITS", color: "#00ff88", h: 60, bars: true }) +
+    axis +
+    `<div class="note">Each panel has its own vertical scale &mdash; compare shape and timing across panels, not height. ${n} days, ${rows.length} with data.</div>`;
 }
 
-function spark(rows, days) {
-  if (!rows || rows.length < 2) return "";
-  const W = 74, H = 16;
+
+function spark(rows, days, fleetMax) {
+  // Normalized to the fleet max, not the row max: a per-row scale made a 3-clone
+  // repo spike as tall as a 33-clone one. The table already carries the counts,
+  // so the sparkline's job is WHEN, at honest relative magnitude.
+  if (!rows || !rows.length) return "";
   const arr = densify(rows, "clones", days);
-  const max = Math.max(1, ...arr.filter((v) => v != null));
+  if (!arr.some((v) => v)) return "";  // no clones at all: draw nothing, not a flat line
+  const W = 74, H = 16;
+  const max = Math.max(1, fleetMax || 1);
   const n = days.length;
   let d = "", pen = false;
   for (let i = 0; i < n; i++) {
     if (arr[i] == null) { pen = false; continue; }
     const px = ((i * W) / Math.max(n - 1, 1)).toFixed(1);
-    const py = (H - 2 - (arr[i] / max) * (H - 4)).toFixed(1);
+    const py = (H - 2 - (Math.min(arr[i], max) / max) * (H - 4)).toFixed(1);
     d += (pen ? "L" : "M") + px + " " + py + " ";
     pen = true;
   }
   return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="vertical-align:middle" aria-hidden="true"><path d="${d.trim()}" fill="none" stroke="#ff6b35" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
 }
 
+
 function page(d) {
   const maxc = Math.max(1, ...d.traffic.map((t) => t.clones || 0));
   const maxa = Math.max(1, ...d.active.map((a) => a.commits || 0));
   const sdays = dayAxis(d.series);
+  const fleetMax = Math.max(1, ...Object.values(d.spark)
+    .flatMap((rs) => rs.map((r) => r.clones || 0)));
   const row = (t) => `<tr><td>${esc(t.name)}${t.private ? ' <span class="tag">priv</span>' : ""}</td>
-<td style="width:80px">${spark(d.spark[t.name], sdays)}</td>
+<td style="width:80px">${spark(d.spark[t.name], sdays, fleetMax)}</td>
 <td style="width:38%"><span class="bar" style="background:#ff6b35;width:${(t.clones / maxc) * 100}%"></span>
 <span class="bar" style="background:#00d4ff;width:${(t.views / maxc) * 100}%"></span></td>
 <td class="num" style="color:#ff6b35">${t.clones}</td><td class="num" style="color:#6a6a78">${t.peak_clone_uniq ?? 0}</td>
@@ -367,7 +372,7 @@ td{padding:5px 8px 5px 0;border-bottom:1px solid #15151b}
 ${chart(d.series, d.commitSeries)}
 <div class="note">GitHub keeps 14 days and discards the rest; everything left of that line exists only here. Gaps are gaps, not zeros &mdash; a day with no row was never collected.</div>
 <h2>HOT &mdash; 14 day window</h2>
-<table><tr><th>repo</th><th>trend</th><th></th><th class="num">clones</th><th class="num">peak/day</th><th class="num">views</th><th class="num">peak/day</th></tr>
+<table><tr><th>repo</th><th title="30d clones, all rows on one scale">trend</th><th></th><th class="num">clones</th><th class="num">peak/day</th><th class="num">views</th><th class="num">peak/day</th></tr>
 ${d.traffic.map(row).join("")}</table>
 <div class="note">Peak/day is the highest single-day unique count, never a sum &mdash; GitHub reports uniques per period, so adding daily values double-counts anything that returns.</div>
 <h2>REFERRERS</h2>

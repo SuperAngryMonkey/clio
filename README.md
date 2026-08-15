@@ -120,10 +120,19 @@ Clio upserts each day into `traffic_daily` keyed `(repo_id, day)`, so history
 accumulates from the day you deploy it. Past the first fortnight, the chart is
 showing you data that no longer exists anywhere else.
 
-The **Activity** panel plots daily clones (area and line), views (dashed) and
-commits (bars, on their own scale) over 90 days. Each row of the **Hot** table
-carries a 30-day clone sparkline. Charts are inline SVG generated in the Worker
-— no chart library, no CDN, nothing to fail behind Access.
+The **Activity** panel is a set of small multiples: separate stacked panels for
+clones, views and commits over 90 days, each with its own vertical scale,
+sharing one x-axis. Compare shape and timing across panels, not height. A single
+shared scale would let one busy view-day flatten a clone surge into the floor,
+and a dual axis would invite exactly the height comparison that is not valid.
+
+Each row of the **Hot** table carries a 30-day clone sparkline, normalized to
+the busiest repo in the fleet rather than to itself — so a quiet repo looks
+quiet. Rows with no clones draw nothing at all, because a flat line reads as
+data rather than absence.
+
+Charts are inline SVG generated in the Worker — no chart library, no CDN,
+nothing to fail behind Access.
 
 ### Gaps are gaps
 
