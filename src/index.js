@@ -332,7 +332,7 @@ function page(d) {
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0a0a0c;color:#c8c8d0;font-family:'IBM Plex Mono',monospace;padding:28px;font-size:13px}
-.wrap{max-width:1000px;margin:0 auto}
+.wrap{width:100%;max-width:1000px;margin:0 auto}
 h1{font-family:'Bebas Neue',sans-serif;font-size:42px;letter-spacing:4px;color:#00d4ff;line-height:.9;font-weight:400}
 h2{font-family:'Bebas Neue',sans-serif;font-size:17px;letter-spacing:2px;color:#00d4ff;font-weight:400;margin:26px 0 12px}
 .ep{font-size:10px;color:#4e4e5c;margin-top:6px;letter-spacing:.5px}
@@ -352,6 +352,10 @@ td{padding:5px 8px 5px 0;border-bottom:1px solid #15151b}
 .note{font-size:10.5px;color:#5a5a68;margin-top:8px;line-height:1.6}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:26px}
 @media(max-width:760px){.cols{grid-template-columns:1fr}}
+/* Wide screens: give the page room. A 4K panel at 200% scaling reports a
+   1920px viewport, so these are CSS-pixel breakpoints, not resolutions. */
+@media(min-width:1500px){.wrap{max-width:1400px}body{padding:34px}}
+@media(min-width:2100px){.wrap{max-width:1750px}body{font-size:14px}}
 </style></head><body><div class="wrap">
 <div class="hdr">
 <div><h1>CLIO</h1><div class="ep">&#7985;&sigma;&tau;&omicron;&rho;&#943;&eta;&sigmaf; &#7936;&pi;&#972;&delta;&epsilon;&xi;&iota;&sigmaf;</div></div>
