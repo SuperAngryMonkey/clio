@@ -33,10 +33,26 @@ devDependency.
 - **Hot** — views, clones, referrers and popular paths per repo, 14-day window
 - **Fleet** — commits and staleness across every repo, public and private
 - **Activity** — the same numbers as a daily series, for as far back as Clio has been running
+- **Packages** — PyPI downloads per day, so installs sit beside the clones that are not installs
 
 These are deliberately separate. Popularity only means anything for public repos
 with an audience; activity applies to all of them. For a single-operator fleet
 the activity panel is usually the one worth reading.
+
+### Why not just use the Insights tab
+
+GitHub gives you fourteen days of traffic and then deletes it. There is no
+export, no backfill, and no way to ask what last month looked like. Clio's only
+real trick is writing each day down before it disappears — past the first
+fortnight it is showing you data that no longer exists anywhere else.
+
+The second reason is calibration. Clone counts are mostly not people. Mirrors,
+CI, security scanners and crawlers clone public repos on a schedule, and they
+spike after every push. On this fleet, clone bursts land within about 48 hours
+of a commit and decay to nothing, while page views stay flat — which is exactly
+backwards from how a human behaves, since nobody clones a repo they have not
+looked at. Putting clones, views, commits and downloads on one shared time axis
+makes that pattern visible instead of flattering.
 
 ## Free tier
 
@@ -177,6 +193,64 @@ npx wrangler deploy
 
 Then configure Access. Full walkthrough including the two Cloudflare gotchas that
 cost real time: **`docs/SETUP-CLOUDFLARE.md`**.
+
+## Configuration
+
+Set in `wrangler.toml`. Everything optional is **off when empty** — no feature
+flags to contradict, and nothing renders for a capability you have not
+configured.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `GITHUB_OWNER` | — | Whose repos to collect |
+| `REPOS_PER_RUN` | `7` | Fleet slice per cron run; see the subrequest cap above |
+| `REQUIRE_ACCESS` | `1` | Refuse requests that did not come through Cloudflare Access |
+| `PYPI_PACKAGES` | *(empty)* | Comma-separated PyPI project names |
+| `ALERT_WEBHOOK` | *(empty)* | POST target for collector alerts |
+| `ALERT_MIN_HOURS` | `12` | Minimum gap between repeat alerts |
+| `STALE_RUN_HOURS` | `9` | No successful sync in this long counts as a problem |
+| `STALE_REPO_DAYS` | `10` | A repo uncollected this long counts as a problem |
+
+### Package downloads
+
+Leave `PYPI_PACKAGES` empty and Clio is GitHub-only: no requests to pypistats,
+no chart panel, no packages table. Name a package and both appear.
+
+Worth knowing what the number is. PyPI download counts are inflated by mirrors,
+CI and the scanners that inspect every new release, so a release-day spike that
+decays within days is automation, not adoption. The floor it settles to is the
+part that means something. Clio stores the non-mirror count and the with-mirrors
+total separately so the ratio stays visible.
+
+### Alerting
+
+A silent collector is the worst failure this project has: Clio holds days that
+GitHub has already deleted, and a gap cannot be backfilled. Two things are
+checked, and the second is the one a simple uptime check misses.
+
+The first is obvious — the cron stops, or runs keep failing. The second is not:
+because collection is chunked with a cursor, the cursor can stick on part of the
+fleet while everything else keeps updating. One repo starves, the dashboard
+still looks healthy, and it quietly passes the fourteen-day line. So per-repo
+freshness is checked separately.
+
+`ALERT_WEBHOOK` receives a plain-text POST, which an ntfy topic, a Slack
+incoming hook or your own endpoint will all accept. Repeats are suppressed for
+`ALERT_MIN_HOURS` so a persistent fault does not page you every three hours
+forever. Empty disables alerting.
+
+`GET /healthz` returns the same verdict as JSON and **503** when unhealthy, for
+uptime monitoring. It reports only ok, last sync time and a problem count — no
+repo names — because it has to sit in front of the Access check. **Access will
+block it unless you add a Bypass policy scoped to that path**, which is easy to
+forget and makes the endpoint look broken.
+
+### Theme
+
+Dark by default, with a toggle in the header. With no stored preference it
+follows `prefers-color-scheme`, so visitors get whatever their system already
+says. The charts are themed from the same custom properties as the page rather
+than hardcoded, so they follow along.
 
 ## Operating it
 
