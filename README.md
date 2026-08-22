@@ -11,8 +11,12 @@ no card on file, no server. The free-tier ceilings are not incidental here — t
 50-subrequest cap is the reason the collector is chunked rather than a simple
 loop. See [Free tier](#free-tier).
 
-This is the `cloudflare` branch. For the Debian/LXC deployment — Postgres,
-systemd, Flask — see `main`.
+This is the `cloudflare` branch, and the default. There is also a
+[`main`](../../tree/main) branch holding the original self-hosted build —
+Postgres, systemd, Flask, one Linux box. It is superseded and not maintained,
+but it is kept for a reason: a Worker runs at the edge and cannot reach a git
+server that only exists on a LAN. If you are pointing this at **self-hosted git
+— Gitea, Forgejo, GitLab CE — start from that branch instead.**
 
 ## Shape
 
