@@ -1,4 +1,19 @@
-# Clio
+# Clio &mdash; Debian/LXC
+
+> **Superseded, kept deliberately.** Active development is on the
+> [`cloudflare`](../../tree/cloudflare) branch, which is the default and where
+> everything since has landed: daily time series, package download tracking,
+> collector alerting, light/dark themes.
+>
+> This branch is the original self-hosted build — Postgres, systemd, Flask, one
+> Linux box. It is not abandoned. A Cloudflare Worker runs at the edge and
+> cannot reach a git server that only exists on a LAN, so if Clio is ever
+> pointed at **self-hosted git — Gitea, Forgejo, GitLab CE — this is the design
+> to come back to.** That is a real possibility, not a courtesy.
+>
+> It is not receiving fixes in the meantime. Treat it as a starting point
+> rather than something to deploy as-is.
+
 
 *&#7985;&sigma;&tau;&omicron;&rho;&#943;&eta;&sigmaf; &#7936;&pi;&#972;&delta;&epsilon;&xi;&iota;&sigmaf;* — the setting forth of an inquiry.
 
