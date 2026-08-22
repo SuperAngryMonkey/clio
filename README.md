@@ -1,7 +1,7 @@
 # Clio &mdash; Debian/LXC
 
 > **Superseded, kept deliberately.** Active development is on the
-> [`cloudflare`](../../tree/cloudflare) branch, which is the default and where
+> [`main`](../../tree/main) branch, which is the default and where
 > everything since has landed: daily time series, package download tracking,
 > collector alerting, light/dark themes.
 >
