@@ -31,6 +31,11 @@ database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
 GITHUB_OWNER = "your-github-account-or-org"
 REPOS_PER_RUN = "7"
 PYPI_PACKAGES = ""   # comma-separated PyPI project names, e.g. "my-pkg,other-pkg"
+ALERT_WEBHOOK  = ""   # POST target for collector alerts; empty disables alerting.
+                      # An ntfy topic URL, Slack hook, or any endpoint taking a text POST.
+ALERT_MIN_HOURS = "12" # minimum gap between repeat alerts
+STALE_RUN_HOURS = "9"  # no successful sync in this long = problem
+STALE_REPO_DAYS = "10" # a repo uncollected this long = problem (GitHub drops at 14)
 
 # GITHUB_TOKEN is a secret, never a var:
 #   wrangler secret put GITHUB_TOKEN

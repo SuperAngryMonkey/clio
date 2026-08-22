@@ -265,6 +265,79 @@ async function syncPackages(env, db, budget) {
   return ok;
 }
 
+// ---- health and alerting ---------------------------------------------------
+// The collector failing silently is the worst failure this project has, because
+// D1 holds days that GitHub has already deleted. A gap cannot be backfilled.
+//
+// Two distinct failures, and the second is the sneaky one:
+//   1. the cron stops, or runs keep erroring  -> the whole fleet goes stale
+//   2. the cursor sticks on part of the fleet -> ONE repo starves while the
+//      dashboard still looks healthy, and passes 14 days unnoticed
+// A global "last run ok" check catches the first and misses the second, so
+// per-repo freshness is checked separately.
+
+async function health(env, db) {
+  const staleDays = Number(env.STALE_REPO_DAYS || 10);
+  const quietHours = Number(env.STALE_RUN_HOURS || 9); // 3 missed crons at 3h
+  const [lastOk, fails, stale, counts] = await db.batch([
+    db.prepare("SELECT max(finished) f FROM sync_runs WHERE ok=1"),
+    db.prepare(`SELECT count(*) n FROM (SELECT ok FROM sync_runs
+        WHERE finished IS NOT NULL ORDER BY id DESC LIMIT 3) WHERE ok=0`),
+    db.prepare(`SELECT name, last_synced FROM repos
+        WHERE archived=0 AND (last_synced IS NULL
+          OR last_synced < datetime('now','-' || ? || ' days'))
+        ORDER BY last_synced IS NOT NULL, last_synced LIMIT 20`).bind(staleDays),
+    db.prepare("SELECT count(*) n FROM repos WHERE archived=0"),
+  ]);
+  const lastRun = lastOk.results[0]?.f || null;
+  const recentFails = fails.results[0]?.n || 0;
+  const staleRepos = stale.results.map((r) => r.name);
+  const problems = [];
+  if (!lastRun) {
+    problems.push("no successful sync has ever finished");
+  } else {
+    const hrs = (Date.now() - Date.parse(lastRun.replace(" ", "T") + "Z")) / 3.6e6;
+    if (hrs > quietHours) {
+      problems.push(`no successful sync in ${hrs.toFixed(1)}h (threshold ${quietHours}h)`);
+    }
+  }
+  if (recentFails >= 3) problems.push("last 3 sync runs all failed");
+  if (staleRepos.length) {
+    problems.push(`${staleRepos.length} repo(s) not collected in ${staleDays}d: ` +
+      staleRepos.slice(0, 8).join(", ") + (staleRepos.length > 8 ? ", ..." : ""));
+  }
+  return {
+    ok: problems.length === 0, problems, lastRun, recentFails,
+    staleRepos, staleDays, quietHours, repos: counts.results[0]?.n || 0,
+  };
+}
+
+// Generic webhook so this is not tied to one vendor: an ntfy topic URL, a
+// Pushover proxy, a Slack incoming hook and a homelab endpoint all accept a
+// POST with a text body. Empty ALERT_WEBHOOK disables alerting entirely.
+async function alertIfSick(env, db, h) {
+  const url = env.ALERT_WEBHOOK;
+  if (!url || h.ok) return null;
+  const minHours = Number(env.ALERT_MIN_HOURS || 12);
+  const last = await getState(db, "last_alert", "");
+  if (last) {
+    const since = (Date.now() - Date.parse(last)) / 3.6e6;
+    if (since < minHours) return "suppressed"; // do not alert every 3h forever
+  }
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain", Title: "Clio collector problem", Priority: "high" },
+      body: "Clio: " + h.problems.join(" | "),
+    });
+    await setState(db, "last_alert", new Date().toISOString());
+    return "sent";
+  } catch (e) {
+    console.log("clio alert failed:", String(e));
+    return "failed";
+  }
+}
+
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -431,6 +504,10 @@ td{padding:5px 8px 5px 0;border-bottom:1px solid #15151b}
 <div class="tile"><div class="k">STARS</div><div class="v" style="color:#ff6b35">${d.inv.stars ?? 0}</div></div>
 <div class="tile"><div class="k">FORKS</div><div class="v">${d.inv.forks ?? 0}</div></div>
 </div>
+${d.hz.ok ? "" : `<div style="border:1px solid #ff6b35;border-radius:4px;padding:10px 12px;margin:14px 0">
+<strong style="color:#ff6b35">COLLECTOR PROBLEM</strong>
+<ul style="margin:6px 0 0 18px">${d.hz.problems.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+<div class="note">Gaps cannot be backfilled &mdash; GitHub keeps 14 days and discards the rest.</div></div>`}
 <h2>ACTIVITY &mdash; ${d.seriesDays}d</h2>
 ${chart(d.series, d.commitSeries, d.dlSeries)}
 <div class="note">GitHub keeps 14 days and discards the rest; everything left of that line exists only here. Gaps are gaps, not zeros &mdash; a day with no row was never collected.</div>
@@ -464,13 +541,23 @@ Cloudflare Worker + D1 &middot; collector every 3h, ${d.perRun} repos per slice,
 export default {
   async scheduled(event, env, ctx) {
     const res = await syncSlice(env);
-    console.log("clio sync:", JSON.stringify(res));
+    const h = await health(env, env.DB);
+    const alerted = await alertIfSick(env, env.DB, h);
+    console.log("clio sync:", JSON.stringify({ ...res, healthy: h.ok, problems: h.problems, alerted }));
   },
 
   async fetch(request, env) {
     const url = new URL(request.url);
+    // Deliberately ahead of the Access check: uptime monitoring has to reach it.
+    // Reports collector state, not just "the Worker is running" -- a Worker that
+    // answers while the collector is dead is exactly the failure being watched
+    // for. Deliberately says nothing about repo names or counts.
     if (url.pathname === "/healthz") {
-      return Response.json({ ok: true });
+      const h = await health(env, env.DB);
+      return Response.json(
+        { ok: h.ok, last_sync: h.lastRun, problems: h.problems.length },
+        { status: h.ok ? 200 : 503 }
+      );
     }
 
     // Cloudflare Access terminates in front of this Worker and injects these
@@ -524,6 +611,7 @@ export default {
 
     const db = env.DB;
     const seriesDays = 90;
+    const hz = await health(env, db);
     const [inv, traffic, referrers, active, cold, run, fleet, series, commitSeries, sparkRows, dlSeries, pkgRows] = await Promise.all([
       db.prepare(`SELECT count(*) total,
             sum(CASE WHEN private=0 THEN 1 ELSE 0 END) pub,
@@ -583,7 +671,7 @@ export default {
       active: active.results, cold: cold.results, run, user: email,
       perRun: env.REPOS_PER_RUN || "8", fleet: fleet?.v ?? "?",
       series: series.results, commitSeries: commitSeries.results, spark, seriesDays,
-      dlSeries: dlSeries.results, packages: pkgRows.results,
+      dlSeries: dlSeries.results, packages: pkgRows.results, hz,
     }), { headers: { "content-type": "text/html;charset=utf-8" } });
   },
 };
