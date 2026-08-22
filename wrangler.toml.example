@@ -30,6 +30,7 @@ database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
 [vars]
 GITHUB_OWNER = "your-github-account-or-org"
 REPOS_PER_RUN = "7"
+PYPI_PACKAGES = ""   # comma-separated PyPI project names, e.g. "my-pkg,other-pkg"
 
 # GITHUB_TOKEN is a secret, never a var:
 #   wrangler secret put GITHUB_TOKEN

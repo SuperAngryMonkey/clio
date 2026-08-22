@@ -194,19 +194,75 @@ async function syncSlice(env) {
       synced++;
     }
 
+    // Packages last: repos get first claim on the subrequest budget.
+    const pkgs = await syncPackages(env, db, budget);
+
     const next = (cursor + slice.length) % Math.max(repos.length, 1);
     await setState(db, "cursor", next);
     await setState(db, "fleet_size", repos.length);
     await db.prepare(`UPDATE sync_runs SET finished=datetime('now'), ok=1,
         repos_synced=?, api_calls=?, slice_from=?, slice_to=? WHERE id=?`)
       .bind(synced, budget.used, from, to, runId).run();
-    return { ok: true, synced, calls: budget.used, from, to, next, fleet: repos.length };
+    return { ok: true, synced, packages: pkgs, calls: budget.used, from, to, next, fleet: repos.length };
   } catch (e) {
     await db.prepare(`UPDATE sync_runs SET finished=datetime('now'), ok=0,
         repos_synced=?, api_calls=?, error=? WHERE id=?`)
       .bind(synced, budget.used, String(e).slice(0, 400), runId).run();
     return { ok: false, error: String(e), synced, calls: budget.used };
   }
+}
+
+// ---- package downloads -----------------------------------------------------
+// pypistats serves the full daily history per package, so a single call keeps
+// the whole series current. Upsert with MAX: re-reading an overlapping window
+// must be idempotent, same rule as traffic_daily.
+//
+// Downloads are NOT installs. New packages get a burst of automated scanner
+// traffic that decays over days; a sustained floor after that decay is the
+// part worth reading. The mirrors column is kept so the ratio stays visible.
+async function pypi(budget, name) {
+  if (!budget.take()) return { data: null, err: "budget exhausted" };
+  try {
+    const r = await fetch(`https://pypistats.org/api/packages/${encodeURIComponent(name)}/overall`, {
+      headers: { "User-Agent": "clio-worker", Accept: "application/json" },
+    });
+    if (!r.ok) return { data: null, err: "HTTP " + r.status };
+    return { data: await r.json(), err: null };
+  } catch (e) {
+    return { data: null, err: String(e).slice(0, 120) };
+  }
+}
+
+async function syncPackages(env, db, budget) {
+  const names = String(env.PYPI_PACKAGES || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  let ok = 0;
+  for (const name of names) {
+    const { data, err } = await pypi(budget, name);
+    if (err || !data?.data) continue;
+    const byDay = new Map();
+    for (const row of data.data) {
+      const e = byDay.get(row.date) || { downloads: 0, mirrors: 0 };
+      if (row.category === "without_mirrors") e.downloads = row.downloads;
+      else if (row.category === "with_mirrors") e.mirrors = row.downloads;
+      byDay.set(row.date, e);
+    }
+    const stmts = [db.prepare(
+      "INSERT INTO packages (name) VALUES (?) ON CONFLICT(name) DO NOTHING"
+    ).bind(name)];
+    for (const [day, v] of byDay) {
+      stmts.push(db.prepare(`INSERT INTO package_downloads_daily (name, day, downloads, mirrors)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(name, day) DO UPDATE SET
+            downloads = MAX(downloads, excluded.downloads),
+            mirrors   = MAX(mirrors,   excluded.mirrors)`)
+        .bind(name, day, v.downloads, v.mirrors));
+    }
+    // D1 batches are capped; chunk so a long history cannot blow the limit.
+    for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
+    ok++;
+  }
+  return ok;
 }
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
@@ -233,7 +289,7 @@ function dayAxis(rows) {
   return out;
 }
 
-function chart(rows, commitRows) {
+function chart(rows, commitRows, dlRows) {
   if (!rows.length) return '<div class="note">No time-series data yet &mdash; the collector needs at least one completed slice.</div>';
   const days = dayAxis(rows);
   const n = days.length;
@@ -287,6 +343,9 @@ function chart(rows, commitRows) {
   return panel(densify(rows, "clones", days), { label: "CLONES", color: "#ff6b35", h: 96, area: true }) +
     panel(densify(rows, "views", days), { label: "VIEWS", color: "#00d4ff", h: 84, dash: true, w: 1.6 }) +
     panel(densify(commitRows, "commits", days), { label: "COMMITS", color: "#00ff88", h: 60, bars: true }) +
+    (dlRows && dlRows.length
+      ? panel(densify(dlRows, "downloads", days), { label: "PyPI DOWNLOADS (non-mirror)", color: "#c77dff", h: 72, area: true })
+      : "") +
     axis +
     `<div class="note">Each panel has its own vertical scale &mdash; compare shape and timing across panels, not height. ${n} days, ${rows.length} with data.</div>`;
 }
@@ -373,8 +432,14 @@ td{padding:5px 8px 5px 0;border-bottom:1px solid #15151b}
 <div class="tile"><div class="k">FORKS</div><div class="v">${d.inv.forks ?? 0}</div></div>
 </div>
 <h2>ACTIVITY &mdash; ${d.seriesDays}d</h2>
-${chart(d.series, d.commitSeries)}
+${chart(d.series, d.commitSeries, d.dlSeries)}
 <div class="note">GitHub keeps 14 days and discards the rest; everything left of that line exists only here. Gaps are gaps, not zeros &mdash; a day with no row was never collected.</div>
+${d.packages.length ? `<h2>PACKAGES</h2>
+<table><tr><th>package</th><th class="num">7d</th><th class="num">30d</th><th class="num">all</th><th class="num">peak/day</th><th>first seen</th></tr>
+${d.packages.map((p) => `<tr><td>${esc(p.name)}</td><td class="num">${p.d7}</td><td class="num">${p.d30}</td>
+<td class="num">${p.total}</td><td class="num">${p.peak}</td><td>${esc(p.first_day || "-")}</td></tr>`).join("")}</table>
+<div class="note">Non-mirror downloads. A release-day spike that decays within days is automated
+scanner traffic, not adoption &mdash; the floor it settles to is the part that means something.</div>` : ""}
 <h2>HOT &mdash; 14 day window</h2>
 <table><tr><th>repo</th><th title="30d clones, all rows on one scale">trend</th><th></th><th class="num">clones</th><th class="num">peak/day</th><th class="num">views</th><th class="num">peak/day</th></tr>
 ${d.traffic.map(row).join("")}</table>
@@ -441,9 +506,13 @@ export default {
               FROM traffic_daily WHERE day > date('now','-' || ? || ' days')
               GROUP BY day ORDER BY day`).bind(n);
       const { results } = await q.all();
+      const { results: dl } = await env.DB.prepare(
+        `SELECT day, sum(downloads) downloads, sum(mirrors) mirrors
+           FROM package_downloads_daily WHERE day > date('now','-' || ? || ' days')
+           GROUP BY day ORDER BY day`).bind(n).all();
       return Response.json({
         scope: repo || "fleet", days: n, note: "uniques are per-day; do not sum",
-        series: results,
+        series: results, downloads: dl,
       });
     }
 
@@ -455,7 +524,7 @@ export default {
 
     const db = env.DB;
     const seriesDays = 90;
-    const [inv, traffic, referrers, active, cold, run, fleet, series, commitSeries, sparkRows] = await Promise.all([
+    const [inv, traffic, referrers, active, cold, run, fleet, series, commitSeries, sparkRows, dlSeries, pkgRows] = await Promise.all([
       db.prepare(`SELECT count(*) total,
             sum(CASE WHEN private=0 THEN 1 ELSE 0 END) pub,
             sum(CASE WHEN private=1 THEN 1 ELSE 0 END) priv,
@@ -492,6 +561,18 @@ export default {
       db.prepare(`SELECT r.name, t.day, t.clones
           FROM traffic_daily t JOIN repos r ON r.repo_id=t.repo_id
           WHERE t.day > date('now','-30 days') ORDER BY t.day`).all(),
+      db.prepare(`SELECT day, sum(downloads) downloads
+          FROM package_downloads_daily WHERE day > date('now','-' || ? || ' days')
+          GROUP BY day ORDER BY day`).bind(seriesDays).all(),
+      db.prepare(`SELECT p.name, p.first_seen,
+            (SELECT min(day) FROM package_downloads_daily WHERE name=p.name AND downloads>0) first_day,
+            COALESCE((SELECT sum(downloads) FROM package_downloads_daily
+               WHERE name=p.name AND day > date('now','-7 days')),0) d7,
+            COALESCE((SELECT sum(downloads) FROM package_downloads_daily
+               WHERE name=p.name AND day > date('now','-30 days')),0) d30,
+            COALESCE((SELECT sum(downloads) FROM package_downloads_daily WHERE name=p.name),0) total,
+            COALESCE((SELECT max(downloads) FROM package_downloads_daily WHERE name=p.name),0) peak
+          FROM packages p ORDER BY d30 DESC, p.name`).all(),
     ]);
 
     const spark = {};
@@ -502,6 +583,7 @@ export default {
       active: active.results, cold: cold.results, run, user: email,
       perRun: env.REPOS_PER_RUN || "8", fleet: fleet?.v ?? "?",
       series: series.results, commitSeries: commitSeries.results, spark, seriesDays,
+      dlSeries: dlSeries.results, packages: pkgRows.results,
     }), { headers: { "content-type": "text/html;charset=utf-8" } });
   },
 };
