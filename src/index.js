@@ -395,8 +395,8 @@ function chart(rows, commitRows, dlRows) {
     flushArea();
     const grid = [0, 1].map((f) => {
       const gy = (H - B - f * (H - T - B)).toFixed(1);
-      return `<line x1="${L}" y1="${gy}" x2="${W - R}" y2="${gy}" stroke="#1e1e26" stroke-width="1"/>` +
-        `<text x="${L - 6}" y="${(+gy + 3).toFixed(1)}" fill="#4e4e5c" font-size="9" text-anchor="end">${Math.round(f * max)}</text>`;
+      return `<line x1="${L}" y1="${gy}" x2="${W - R}" y2="${gy}" stroke="var(--rule)" stroke-width="1"/>` +
+        `<text x="${L - 6}" y="${(+gy + 3).toFixed(1)}" fill="var(--dimmer)" font-size="9" text-anchor="end">${Math.round(f * max)}</text>`;
     }).join("");
     const bars = opt.bars ? arr.map((v, i) => v
       ? `<rect x="${(x(i) - 1.5).toFixed(1)}" y="${y(v).toFixed(1)}" width="3" height="${(H - B - y(v)).toFixed(1)}" fill="${opt.color}" opacity=".55"/>`
@@ -410,14 +410,14 @@ function chart(rows, commitRows, dlRows) {
   const step = Math.max(1, Math.ceil(n / 12));
   const axis = `<svg viewBox="0 0 ${W} 16" width="100%" aria-hidden="true" style="display:block">` +
     days.map((d, i) => (i % step === 0 || i === n - 1)
-      ? `<text x="${x(i).toFixed(1)}" y="11" fill="#4e4e5c" font-size="9" text-anchor="middle">${d.slice(5)}</text>` : "").join("") +
+      ? `<text x="${x(i).toFixed(1)}" y="11" fill="var(--dimmer)" font-size="9" text-anchor="middle">${d.slice(5)}</text>` : "").join("") +
     `</svg>`;
 
-  return panel(densify(rows, "clones", days), { label: "CLONES", color: "#ff6b35", h: 96, area: true }) +
-    panel(densify(rows, "views", days), { label: "VIEWS", color: "#00d4ff", h: 84, dash: true, w: 1.6 }) +
-    panel(densify(commitRows, "commits", days), { label: "COMMITS", color: "#00ff88", h: 60, bars: true }) +
+  return panel(densify(rows, "clones", days), { label: "CLONES", color: "var(--clones)", h: 96, area: true }) +
+    panel(densify(rows, "views", days), { label: "VIEWS", color: "var(--views)", h: 84, dash: true, w: 1.6 }) +
+    panel(densify(commitRows, "commits", days), { label: "COMMITS", color: "var(--commits)", h: 60, bars: true }) +
     (dlRows && dlRows.length
-      ? panel(densify(dlRows, "downloads", days), { label: "PyPI DOWNLOADS (non-mirror)", color: "#c77dff", h: 72, area: true })
+      ? panel(densify(dlRows, "downloads", days), { label: "PyPI DOWNLOADS (non-mirror)", color: "var(--downloads)", h: 72, area: true })
       : "") +
     axis +
     `<div class="note">Each panel has its own vertical scale &mdash; compare shape and timing across panels, not height. ${n} days, ${rows.length} with data.</div>`;
@@ -442,7 +442,7 @@ function spark(rows, days, fleetMax) {
     d += (pen ? "L" : "M") + px + " " + py + " ";
     pen = true;
   }
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="vertical-align:middle" aria-hidden="true"><path d="${d.trim()}" fill="none" stroke="#ff6b35" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="vertical-align:middle" aria-hidden="true"><path d="${d.trim()}" fill="none" stroke="var(--clones)" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
 }
 
 
@@ -454,34 +454,62 @@ function page(d) {
     .flatMap((rs) => rs.map((r) => r.clones || 0)));
   const row = (t) => `<tr><td>${esc(t.name)}${t.private ? ' <span class="tag">priv</span>' : ""}</td>
 <td style="width:80px">${spark(d.spark[t.name], sdays, fleetMax)}</td>
-<td style="width:38%"><span class="bar" style="background:#ff6b35;width:${(t.clones / maxc) * 100}%"></span>
-<span class="bar" style="background:#00d4ff;width:${(t.views / maxc) * 100}%"></span></td>
-<td class="num" style="color:#ff6b35">${t.clones}</td><td class="num" style="color:#6a6a78">${t.peak_clone_uniq ?? 0}</td>
-<td class="num" style="color:#00d4ff">${t.views}</td><td class="num" style="color:#6a6a78">${t.peak_view_uniq ?? 0}</td></tr>`;
+<td style="width:38%"><span class="bar" style="background:var(--clones);width:${(t.clones / maxc) * 100}%"></span>
+<span class="bar" style="background:var(--views);width:${(t.views / maxc) * 100}%"></span></td>
+<td class="num" style="color:var(--clones)">${t.clones}</td><td class="num" style="color:var(--dim)">${t.peak_clone_uniq ?? 0}</td>
+<td class="num" style="color:var(--views)">${t.views}</td><td class="num" style="color:var(--dim)">${t.peak_view_uniq ?? 0}</td></tr>`;
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Clio</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script>
+// Runs before paint: reading the stored choice after the body renders would
+// flash the wrong theme. No stored choice means follow the OS.
+(function(){try{var s=localStorage.getItem("clio-theme");
+document.documentElement.setAttribute("data-theme",
+  s || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));}catch(e){}})();
+</script>
 <style>
+/* Two themes from one set of tokens. The SVG generators read these same
+   variables, so charts follow the theme instead of staying dark on a light
+   page -- inline SVG inherits the document's custom properties. */
+:root{
+  --bg:#0a0a0c; --fg:#c8c8d0; --accent:#00d4ff; --tile:#111116; --tile-fg:#e8e8f0;
+  --dim:#5a5a68; --dimmer:#4e4e5c; --rule:#1e1e26; --rule-soft:#15151b;
+  --tag-bg:#1c1c24; --tag-fg:#7a7a88;
+  --clones:#ff6b35; --views:#00d4ff; --commits:#00ff88; --downloads:#c77dff;
+  --ok:#00ff88; --bad:#ff6b35; --warn:#eda100;
+}
+:root[data-theme="light"]{
+  --bg:#faf9f7; --fg:#26262c; --accent:#0a6b8a; --tile:#efedea; --tile-fg:#1a1a1f;
+  --dim:#6b6b76; --dimmer:#8a8a94; --rule:#dcd9d4; --rule-soft:#e8e5e0;
+  --tag-bg:#e2dfda; --tag-fg:#5c5c66;
+  /* Chart hues re-picked rather than reused: the neons are unreadable on paper. */
+  --clones:#c2410c; --views:#0369a1; --commits:#15803d; --downloads:#7e22ce;
+  --ok:#15803d; --bad:#c2410c; --warn:#a16207;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0a0a0c;color:#c8c8d0;font-family:'IBM Plex Mono',monospace;padding:28px;font-size:13px}
+body{background:var(--bg);color:var(--fg);font-family:'IBM Plex Mono',monospace;padding:28px;font-size:13px}
 .wrap{width:100%;max-width:1000px;margin:0 auto}
-h1{font-family:'Bebas Neue',sans-serif;font-size:42px;letter-spacing:4px;color:#00d4ff;line-height:.9;font-weight:400}
-h2{font-family:'Bebas Neue',sans-serif;font-size:17px;letter-spacing:2px;color:#00d4ff;font-weight:400;margin:26px 0 12px}
-.ep{font-size:10px;color:#4e4e5c;margin-top:6px;letter-spacing:.5px}
-.hdr{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid #1e1e26;padding-bottom:14px}
-.meta{text-align:right;font-size:11px;color:#5a5a68;line-height:1.7}
-.ok{color:#00ff88}.bad{color:#ff6b35}
+h1{font-family:'Bebas Neue',sans-serif;font-size:42px;letter-spacing:4px;color:var(--accent);line-height:.9;font-weight:400}
+h2{font-family:'Bebas Neue',sans-serif;font-size:17px;letter-spacing:2px;color:var(--accent);font-weight:400;margin:26px 0 12px}
+.ep{font-size:10px;color:var(--dimmer);margin-top:6px;letter-spacing:.5px}
+.hdr{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid var(--rule);padding-bottom:14px}
+.meta{text-align:right;font-size:11px;color:var(--dim);line-height:1.7}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:9px;margin-top:18px}
-.tile{background:#111116;border-radius:6px;padding:11px 13px}
-.tile .k{font-size:9px;color:#5a5a68;letter-spacing:.5px}
-.tile .v{font-family:'Bebas Neue',sans-serif;font-size:28px;line-height:1.1;color:#e8e8f0}
+.tile{background:var(--tile);border-radius:6px;padding:11px 13px}
+.tile .k{font-size:9px;color:var(--dim);letter-spacing:.5px}
+.tile .v{font-family:'Bebas Neue',sans-serif;font-size:28px;line-height:1.1;color:var(--tile-fg)}
 table{width:100%;border-collapse:collapse;font-size:12px}
-th{text-align:left;font-size:9.5px;color:#5a5a68;letter-spacing:.5px;font-weight:400;padding:5px 8px 5px 0;border-bottom:1px solid #1e1e26}
-td{padding:5px 8px 5px 0;border-bottom:1px solid #15151b}
+th{text-align:left;font-size:9.5px;color:var(--dim);letter-spacing:.5px;font-weight:400;padding:5px 8px 5px 0;border-bottom:1px solid var(--rule)}
+td{padding:5px 8px 5px 0;border-bottom:1px solid var(--rule-soft)}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .bar{display:inline-block;height:8px;border-radius:2px;vertical-align:middle}
-.tag{font-size:9px;padding:1px 5px;border-radius:3px;background:#1c1c24;color:#7a7a88}
-.note{font-size:10.5px;color:#5a5a68;margin-top:8px;line-height:1.6}
+.tag{font-size:9px;padding:1px 5px;border-radius:3px;background:var(--tag-bg);color:var(--tag-fg)}
+.note{font-size:10.5px;color:var(--dim);margin-top:8px;line-height:1.6}
+.themebtn{background:none;border:1px solid var(--rule);color:var(--dim);font:inherit;
+font-size:10px;letter-spacing:.5px;padding:3px 9px;border-radius:4px;cursor:pointer}
+.themebtn:hover{color:var(--fg);border-color:var(--dim)}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:26px}
 @media(max-width:760px){.cols{grid-template-columns:1fr}}
 /* Wide screens: give the page room. A 4K panel at 200% scaling reports a
@@ -496,16 +524,17 @@ td{padding:5px 8px 5px 0;border-bottom:1px solid #15151b}
      <div>${esc(d.run.finished)} UTC</div>
      <div>slice ${d.run.slice_from}&ndash;${d.run.slice_to} &middot; ${d.run.api_calls} calls</div>`
   : '<div class="bad">no sync yet</div>'}
-<div>${esc(d.user || "")}</div></div></div>
+<div>${esc(d.user || "")}</div>
+<div style="margin-top:6px"><button class="themebtn" id="tt" type="button">theme</button></div></div></div>
 <div class="tiles">
 <div class="tile"><div class="k">REPOS</div><div class="v">${d.inv.total ?? 0}</div></div>
-<div class="tile"><div class="k">PUBLIC</div><div class="v" style="color:#00d4ff">${d.inv.pub ?? 0}</div></div>
+<div class="tile"><div class="k">PUBLIC</div><div class="v" style="color:var(--accent)">${d.inv.pub ?? 0}</div></div>
 <div class="tile"><div class="k">PRIVATE</div><div class="v">${d.inv.priv ?? 0}</div></div>
-<div class="tile"><div class="k">STARS</div><div class="v" style="color:#ff6b35">${d.inv.stars ?? 0}</div></div>
+<div class="tile"><div class="k">STARS</div><div class="v" style="color:var(--bad)">${d.inv.stars ?? 0}</div></div>
 <div class="tile"><div class="k">FORKS</div><div class="v">${d.inv.forks ?? 0}</div></div>
 </div>
-${d.hz.ok ? "" : `<div style="border:1px solid #ff6b35;border-radius:4px;padding:10px 12px;margin:14px 0">
-<strong style="color:#ff6b35">COLLECTOR PROBLEM</strong>
+${d.hz.ok ? "" : `<div style="border:1px solid var(--bad);border-radius:4px;padding:10px 12px;margin:14px 0">
+<strong style="color:var(--bad)">COLLECTOR PROBLEM</strong>
 <ul style="margin:6px 0 0 18px">${d.hz.problems.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
 <div class="note">Gaps cannot be backfilled &mdash; GitHub keeps 14 days and discards the rest.</div></div>`}
 <h2>ACTIVITY &mdash; ${d.seriesDays}d</h2>
@@ -524,18 +553,26 @@ ${d.traffic.map(row).join("")}</table>
 <h2>REFERRERS</h2>
 ${d.referrers.length
   ? `<table><tr><th>repo</th><th>source</th><th class="num">count</th><th class="num">uniques</th></tr>
-     ${d.referrers.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.referrer)}</td><td class="num">${r.count}</td><td class="num" style="color:#6a6a78">${r.uniques}</td></tr>`).join("")}</table>`
+     ${d.referrers.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.referrer)}</td><td class="num">${r.count}</td><td class="num" style="color:var(--dim)">${r.uniques}</td></tr>`).join("")}</table>`
   : '<div class="note">No referrer data in the latest snapshot.</div>'}
 <div class="cols">
 <div><h2>MOST ACTIVE &mdash; 365d</h2><table><tr><th>repo</th><th></th><th class="num">commits</th></tr>
-${d.active.map((a) => `<tr><td>${esc(a.name)}</td><td style="width:45%"><span class="bar" style="background:#00ff88;width:${(a.commits / maxa) * 100}%"></span></td><td class="num">${a.commits}</td></tr>`).join("")}</table></div>
+${d.active.map((a) => `<tr><td>${esc(a.name)}</td><td style="width:45%"><span class="bar" style="background:var(--commits);width:${(a.commits / maxa) * 100}%"></span></td><td class="num">${a.commits}</td></tr>`).join("")}</table></div>
 <div><h2>GOING COLD</h2><table><tr><th>repo</th><th class="num">idle</th></tr>
-${d.cold.map((c) => `<tr><td>${esc(c.name)}${c.private ? ' <span class="tag">priv</span>' : ""}</td><td class="num" style="color:${c.days_idle > 80 ? "#ff6b35" : "#eda100"}">${c.days_idle}d</td></tr>`).join("")}</table></div>
+${d.cold.map((c) => `<tr><td>${esc(c.name)}${c.private ? ' <span class="tag">priv</span>' : ""}</td><td class="num" style="color:${c.days_idle > 80 ? "var(--clones)" : "var(--warn)"}">${c.days_idle}d</td></tr>`).join("")}</table></div>
 </div>
 <div class="note" style="margin-top:26px;border-top:1px solid #1e1e26;padding-top:12px">
 Cloudflare Worker + D1 &middot; collector every 3h, ${d.perRun} repos per slice, fleet ${d.fleet}
-&middot; <a href="/sync" style="color:#00d4ff">sync next slice now</a></div>
-</div></body></html>`;
+&middot; <a href="/sync" style="color:var(--accent)">sync next slice now</a></div>
+</div><script>
+document.getElementById("tt").addEventListener("click",function(){
+  var r=document.documentElement;
+  var next=r.getAttribute("data-theme")==="light"?"dark":"light";
+  r.setAttribute("data-theme",next);
+  try{localStorage.setItem("clio-theme",next);}catch(e){}
+});
+</script>
+</body></html>`;
 }
 
 export default {
