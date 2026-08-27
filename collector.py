@@ -72,7 +72,7 @@ def paged(path, accept="application/vnd.github+json", params=None, cap=20):
     return out
 
 def main():
-    conn = psycopg2.connect("dbname=clio")
+    conn = psycopg2.connect(os.environ.get("CLIO_DSN", "dbname=clio"))
     conn.set_client_encoding("UTF8")
     conn.autocommit = False
     cur = conn.cursor()

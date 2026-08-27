@@ -21,6 +21,47 @@ Clio collects GitHub popularity and activity metrics across a repo fleet and
 reports them on one page. Named for the Muse of history: it does not do the
 work, it records what was done.
 
+
+## Run it with Docker
+
+The quickest way to stand this up, and it works anywhere Docker does — inside
+an LXC, on a NAS, on a VPS, on a Pi.
+
+```bash
+git clone -b debian-lxc https://github.com/SuperAngryMonkey/clio.git
+cd clio
+cp .env.example .env      # set GITHUB_TOKEN and GITHUB_OWNER
+docker compose up -d
+```
+
+Then open `http://localhost:8080`.
+
+Three services: Postgres, the Flask dashboard behind gunicorn, and the
+collector. The schema is applied automatically the first time the database
+initialises. Postgres is not published to the host — only the app containers
+can reach it.
+
+The collector runs on an interval inside its own container rather than being
+restarted on a schedule, because restart-as-schedule makes a crash loop look
+like normal operation. `CLIO_INTERVAL_SECONDS` sets the gap, three hours by
+default.
+
+The dashboard uses HTTP Basic auth and expects a credential file — see
+`docs/SECURITY.md` for generating it. It lives on the `clio-data` volume, so
+it survives `docker compose down`.
+
+### Running in an LXC
+
+Docker needs `nesting=1` on the container, which is off by default:
+
+```bash
+pct set <vmid> --features nesting=1,keyctl=1
+pct stop <vmid> && pct start <vmid>
+```
+
+Verified on Debian 12 (bookworm) in an unprivileged Proxmox LXC with Docker
+29.x and overlayfs.
+
 ## What it answers
 
 - **Hot** — views, clones, referrers and popular paths per repo, 14-day window

@@ -1,0 +1,62 @@
+# Clio, self-hosted. Runs anywhere Docker does: an LXC, a NAS, a VPS, a Pi.
+#
+#   cp .env.example .env    # add GITHUB_TOKEN and GITHUB_OWNER
+#   docker compose up -d
+#   http://localhost:8080
+#
+# Postgres is not published to the host: only the two app containers reach it.
+
+name: clio
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: clio
+      POSTGRES_USER: clio
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clio-local-only}
+      # ADR-0001: the cluster must be UTF-8. The official image already
+      # initialises a UTF-8 cluster, so this is belt and braces rather than a
+      # fix -- verify with: docker compose exec db psql -U clio -c "SHOW server_encoding"
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - clio-db:/var/lib/postgresql/data
+      # Applied once, on an empty data directory, by the postgres entrypoint.
+      - ./schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clio -d clio"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  web:
+    build: .
+    environment:
+      CLIO_DSN: "host=db dbname=clio user=clio password=${POSTGRES_PASSWORD:-clio-local-only}"
+      CLIO_PUBLIC_HOST: ${CLIO_PUBLIC_HOST:-localhost:8080}
+    ports:
+      - "${CLIO_PORT:-8080}:8080"
+    volumes:
+      - clio-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector:
+    build: .
+    command: ["collector-loop"]
+    environment:
+      CLIO_DSN: "host=db dbname=clio user=clio password=${POSTGRES_PASSWORD:-clio-local-only}"
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN in .env}
+      GITHUB_OWNER: ${GITHUB_OWNER:?set GITHUB_OWNER in .env}
+      CLIO_INTERVAL_SECONDS: ${CLIO_INTERVAL_SECONDS:-10800}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  clio-db:
+  clio-data:

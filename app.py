@@ -9,7 +9,7 @@ from flask import Flask, render_template_string, Response, request
 from werkzeug.security import check_password_hash
 import psycopg2, psycopg2.extras
 
-AUTH_FILE = "/opt/clio/webauth"
+AUTH_FILE = os.environ.get("CLIO_AUTH_FILE", "/opt/clio/webauth")
 ENV_PATH = "/opt/clio/.env"
 app = Flask(__name__)
 
@@ -45,7 +45,7 @@ def protected(fn):
     return wrap
 
 def q(sql, one=False):
-    conn = psycopg2.connect("dbname=clio")
+    conn = psycopg2.connect(os.environ.get("CLIO_DSN", "dbname=clio"))
     conn.set_client_encoding("UTF8")
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(sql)
