@@ -64,6 +64,65 @@ async function setState(db, k, v) {
   ).bind(k, String(v)).run();
 }
 
+// ---- secret-scanning alerts ------------------------------------------------
+// Mirrored from GitHub, never generated here. One call per repo.
+//
+// Status codes carry meaning and are not all failures:
+//   404 - scanning disabled, or the token lacks the scope. Not an error.
+//   403 - repo is private and the account has no Secret Protection licence.
+// Both mean "no visibility", which is recorded as scan_enabled=0 rather than
+// silently looking identical to "clean". A repo with no alerts and a repo
+// nobody is watching are very different, and the dashboard must not conflate
+// them.
+//
+// Needs a token with the security_events scope (or repo, for private). The
+// traffic endpoints do not require it, so an existing token may 404 here.
+async function syncSecretAlerts(env, db, budget, repoId, full) {
+  if (!budget.take()) return { enabled: null, count: 0 };
+  let res;
+  try {
+    res = await fetch(`https://api.github.com/repos/${full}/secret-scanning/alerts?per_page=100&state=open`, {
+      headers: {
+        Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "clio-worker",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+  } catch {
+    return { enabled: null, count: 0 };
+  }
+  if (res.status === 404 || res.status === 403) {
+    await db.prepare("UPDATE repos SET scan_enabled=0 WHERE repo_id=?").bind(repoId).run();
+    return { enabled: false, count: 0 };
+  }
+  if (!res.ok) return { enabled: null, count: 0 };
+
+  const alerts = await res.json();
+  const stmts = [db.prepare("UPDATE repos SET scan_enabled=1 WHERE repo_id=?").bind(repoId)];
+  for (const a of Array.isArray(alerts) ? alerts : []) {
+    stmts.push(db.prepare(`
+      INSERT INTO secret_alerts (repo_id, number, state, resolution, secret_type,
+                                 provider, validity, html_url, created_at, resolved_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(repo_id, number) DO UPDATE SET
+        state=excluded.state, resolution=excluded.resolution,
+        validity=excluded.validity, resolved_at=excluded.resolved_at,
+        last_seen=datetime('now')`)
+      .bind(repoId, a.number, a.state ?? "open", a.resolution ?? null,
+            a.secret_type ?? null, a.secret_type_display_name ?? null,
+            a.validity ?? "unknown", a.html_url ?? null,
+            a.created_at ?? null, a.resolved_at ?? null));
+  }
+  // Alerts fixed outside this window stop being returned by ?state=open, so
+  // anything not just seen is marked resolved rather than left open forever.
+  stmts.push(db.prepare(`
+    UPDATE secret_alerts SET state='resolved'
+     WHERE repo_id=? AND state='open' AND last_seen < datetime('now','-1 minute')`).bind(repoId));
+  for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
+  return { enabled: true, count: Array.isArray(alerts) ? alerts.length : 0 };
+}
+
 async function syncSlice(env) {
   const db = env.DB;
   const budget = new Budget(MAX_EXTERNAL);
@@ -116,6 +175,8 @@ async function syncSlice(env) {
           open_issues=excluded.open_issues, size_kb=excluded.size_kb`)
         .bind(id, d, r.stargazers_count ?? 0, r.forks_count ?? 0,
               r.watchers_count ?? 0, r.open_issues_count ?? 0, r.size ?? 0));
+
+      await syncSecretAlerts(env, db, budget, id, full);
 
       // Traffic: rolling 14-day window, re-reported every sync. MAX() on conflict
       // keeps re-syncs idempotent and stops a downward revision shrinking history.
@@ -540,6 +601,20 @@ ${d.hz.ok ? "" : `<div style="border:1px solid var(--bad);border-radius:4px;padd
 <h2>ACTIVITY &mdash; ${d.seriesDays}d</h2>
 ${chart(d.series, d.commitSeries, d.dlSeries)}
 <div class="note">GitHub keeps 14 days and discards the rest; everything left of that line exists only here. Gaps are gaps, not zeros &mdash; a day with no row was never collected.</div>
+${d.alerts.length ? `<h2 style="color:var(--bad)">SECRET ALERTS &mdash; ${d.alerts.length} open</h2>
+<table><tr><th>repo</th><th>kind</th><th>validity</th><th>raised</th><th></th></tr>
+${d.alerts.map((a) => `<tr><td>${esc(a.name)}${a.private ? ' <span class="tag">priv</span>' : ""}</td>
+<td>${esc(a.provider || a.secret_type || "-")}</td>
+<td${a.validity === "active" ? ' style="color:var(--bad)"' : ""}>${esc(a.validity || "unknown")}</td>
+<td>${esc((a.created_at || "").slice(0, 10))}</td>
+<td>${a.html_url ? `<a href="${esc(a.html_url)}" style="color:var(--accent)">open</a>` : ""}</td></tr>`).join("")}</table>
+<div class="note">Raised by GitHub, mirrored here &mdash; Clio does not scan. Secret values are never stored.
+<strong>validity=active means the credential still works: rotate first, close the alert after.</strong></div>` : ""}
+<h2>SECRET SCANNING</h2>
+<div class="note">${d.scan.watched || 0} repo(s) scanned by GitHub &middot; ${d.scan.unwatched || 0} not scanned${
+  d.scan.unwatched_private ? ` (${d.scan.unwatched_private} private &mdash; scanning is free on public repos only)` : ""}${
+  d.alerts.length ? "" : " &middot; no open alerts"}.
+An unscanned repo is not a clean repo &mdash; nobody is looking at it.</div>
 ${d.packages.length ? `<h2>PACKAGES</h2>
 <table><tr><th>package</th><th class="num">7d</th><th class="num">30d</th><th class="num">all</th><th class="num">peak/day</th><th>first seen</th></tr>
 ${d.packages.map((p) => `<tr><td>${esc(p.name)}</td><td class="num">${p.d7}</td><td class="num">${p.d30}</td>
@@ -649,6 +724,17 @@ export default {
     const db = env.DB;
     const seriesDays = 90;
     const hz = await health(env, db);
+    const sec = await db.batch([
+      db.prepare(`SELECT r.name, r.private, a.number, a.secret_type, a.provider,
+            a.validity, a.html_url, a.created_at
+          FROM secret_alerts a JOIN repos r ON r.repo_id=a.repo_id
+          WHERE a.state='open' ORDER BY a.validity='active' DESC, a.created_at DESC LIMIT 25`),
+      db.prepare(`SELECT
+            SUM(CASE WHEN scan_enabled=1 THEN 1 ELSE 0 END) watched,
+            SUM(CASE WHEN scan_enabled=0 THEN 1 ELSE 0 END) unwatched,
+            SUM(CASE WHEN scan_enabled=0 AND private=1 THEN 1 ELSE 0 END) unwatched_private
+          FROM repos WHERE archived=0`),
+    ]);
     const [inv, traffic, referrers, active, cold, run, fleet, series, commitSeries, sparkRows, dlSeries, pkgRows] = await Promise.all([
       db.prepare(`SELECT count(*) total,
             sum(CASE WHEN private=0 THEN 1 ELSE 0 END) pub,
@@ -709,6 +795,7 @@ export default {
       perRun: env.REPOS_PER_RUN || "8", fleet: fleet?.v ?? "?",
       series: series.results, commitSeries: commitSeries.results, spark, seriesDays,
       dlSeries: dlSeries.results, packages: pkgRows.results, hz,
+      alerts: sec[0].results, scan: sec[1].results[0] || {},
     }), { headers: { "content-type": "text/html;charset=utf-8" } });
   },
 };
