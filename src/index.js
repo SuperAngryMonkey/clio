@@ -507,20 +507,12 @@ function spark(rows, days, fleetMax) {
 }
 
 
-function page(d) {
-  const maxc = Math.max(1, ...d.traffic.map((t) => t.clones || 0));
-  const maxa = Math.max(1, ...d.active.map((a) => a.commits || 0));
-  const sdays = dayAxis(d.series);
-  const fleetMax = Math.max(1, ...Object.values(d.spark)
-    .flatMap((rs) => rs.map((r) => r.clones || 0)));
-  const row = (t) => `<tr><td>${esc(t.name)}${t.private ? ' <span class="tag">priv</span>' : ""}</td>
-<td style="width:80px">${spark(d.spark[t.name], sdays, fleetMax)}</td>
-<td style="width:38%"><span class="bar" style="background:var(--clones);width:${(t.clones / maxc) * 100}%"></span>
-<span class="bar" style="background:var(--views);width:${(t.views / maxc) * 100}%"></span></td>
-<td class="num" style="color:var(--clones)">${t.clones}</td><td class="num" style="color:var(--dim)">${t.peak_clone_uniq ?? 0}</td>
-<td class="num" style="color:var(--views)">${t.views}</td><td class="num" style="color:var(--dim)">${t.peak_view_uniq ?? 0}</td></tr>`;
+
+// Shared document shell: doctype, theme bootstrap, stylesheet, toggle.
+// Extracted so the fleet page and the per-repo page cannot drift apart.
+function html(title, body) {
   return `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Clio</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script>
 // Runs before paint: reading the stored choice after the body renders would
@@ -578,6 +570,77 @@ font-size:10px;letter-spacing:.5px;padding:3px 9px;border-radius:4px;cursor:poin
 @media(min-width:1500px){.wrap{max-width:1400px}body{padding:34px}}
 @media(min-width:2100px){.wrap{max-width:1750px}body{font-size:14px}}
 </style></head><body><div class="wrap">
+${body}
+</body></html>`;
+}
+
+// ---- per-repo detail -------------------------------------------------------
+// The fleet page answers "which repo". This answers "what happened to it".
+// Same data, no new collection -- everything here was already being stored and
+// merely aggregated away.
+function repoPage(d) {
+  const R = d.repo;
+  const tile = (k, v, c) => `<div class="tile"><div class="k">${k}</div>` +
+    `<div class="v"${c ? ` style="color:${c}"` : ""}>${v}</div></div>`;
+  const snapTable = (rows, label, keyCol) => rows.length
+    ? `<table><tr><th>${keyCol}</th><th class="num">count</th><th class="num">uniques</th></tr>` +
+      rows.map((r) => `<tr><td>${esc(r.k || "-")}</td><td class="num">${r.count}</td>` +
+        `<td class="num">${r.uniques}</td></tr>`).join("") + "</table>" +
+      `<div class="note">Snapshot captured ${esc((rows[0].captured || "").slice(0, 16))}. GitHub reports
+       these as a rolling top-10, not a series &mdash; compare captures, never add them up.</div>`
+    : `<div class="note">No ${label} recorded. GitHub only reports these when there is traffic to report.</div>`;
+
+  return html(`${esc(R.name)} &middot; clio`, `
+<div class="hdr"><div>
+  <h1><a href="/" style="color:inherit;text-decoration:none">CLIO</a> / ${esc(R.name)}</h1>
+  <div class="ep">${R.private ? "private" : "public"}${R.archived ? " &middot; archived" : ""} &middot;
+    ${R.scan_enabled === 1 ? "secret scanning on" : R.scan_enabled === 0 ? "not scanned" : "scan state unknown"}</div>
+</div><div class="meta">
+  <div><a href="https://github.com/${esc(d.owner)}/${esc(R.name)}" style="color:var(--accent)">github &#8599;</a></div>
+  <div>last collected ${esc((R.last_synced || "never").slice(0, 16))}</div>
+  <div><a href="/" style="color:var(--dim)">&larr; fleet</a></div>
+</div></div>
+
+<div class="tiles">
+  ${tile("CLONES 14d", d.t.clones || 0, "var(--clones)")}
+  ${tile("PEAK CLONERS/DAY", d.t.cpk || 0)}
+  ${tile("VIEWS 14d", d.t.views || 0, "var(--views)")}
+  ${tile("PEAK VISITORS/DAY", d.t.vpk || 0)}
+  ${tile("STARS", d.m.stars ?? 0)}
+  ${tile("FORKS", d.m.forks ?? 0)}
+</div>
+
+<h2>ACTIVITY &mdash; ${d.days}d</h2>
+${chart(d.series, d.commits, null)}
+<div class="note">Peak/day is the highest single-day unique count, never a sum.
+${d.first ? `Collected since ${esc(d.first)}.` : ""}</div>
+
+${d.alerts.length ? `<h2 style="color:var(--bad)">SECRET ALERTS</h2>
+<table><tr><th>kind</th><th>validity</th><th>raised</th><th></th></tr>
+${d.alerts.map((a) => `<tr><td>${esc(a.provider || a.secret_type || "-")}</td>
+<td${a.validity === "active" ? ' style="color:var(--bad)"' : ""}>${esc(a.validity || "unknown")}</td>
+<td>${esc((a.created_at || "").slice(0, 10))}</td>
+<td><a href="${esc(a.html_url || "#")}" style="color:var(--accent)">open</a></td></tr>`).join("")}</table>` : ""}
+
+<div class="cols">
+  <div><h2>REFERRERS</h2>${snapTable(d.refs, "referrers", "source")}</div>
+  <div><h2>POPULAR PATHS</h2>${snapTable(d.paths, "paths", "path")}</div>
+</div>`);
+}
+
+function page(d) {
+  const maxc = Math.max(1, ...d.traffic.map((t) => t.clones || 0));
+  const maxa = Math.max(1, ...d.active.map((a) => a.commits || 0));
+  const sdays = dayAxis(d.series);
+  const fleetMax = Math.max(1, ...Object.values(d.spark)
+    .flatMap((rs) => rs.map((r) => r.clones || 0)));
+  const row = (t) => `<tr><td><a href="/repo/${encodeURIComponent(t.name)}" style="color:inherit">${esc(t.name)}</a>${t.private ? ' <span class="tag">priv</span>' : ""}</td>
+<td style="width:80px">${spark(d.spark[t.name], sdays, fleetMax)}</td>
+<td style="width:38%"><span class="bar" style="background:var(--clones);width:${(t.clones / maxc) * 100}%"></span>
+<span class="bar" style="background:var(--views);width:${(t.views / maxc) * 100}%"></span></td>
+<td class="num" style="color:var(--clones)">${t.clones}</td><td class="num" style="color:var(--dim)">${t.peak_clone_uniq ?? 0}</td>
+<td class="num" style="color:var(--views)">${t.views}</td><td class="num" style="color:var(--dim)">${t.peak_view_uniq ?? 0}</td></tr>`;
+  return html("Clio", `
 <div class="hdr">
 <div><h1>CLIO</h1><div class="ep">&#7985;&sigma;&tau;&omicron;&rho;&#943;&eta;&sigmaf; &#7936;&pi;&#972;&delta;&epsilon;&xi;&iota;&sigmaf;</div></div>
 <div class="meta">${d.run
@@ -647,7 +710,7 @@ document.getElementById("tt").addEventListener("click",function(){
   try{localStorage.setItem("clio-theme",next);}catch(e){}
 });
 </script>
-</body></html>`;
+`);
 }
 
 export default {
@@ -692,6 +755,46 @@ export default {
     // Machine-readable daily series. Uniques are returned per-day only; never
     // sum them across days (see docs/adr/0002) -- peak-per-day is the honest
     // aggregate because GitHub reports uniques per period.
+    // /repo/<name> -- per-repo detail. Behind the same Access check as the
+    // fleet page; nothing here is safe to expose that the fleet page is not.
+    if (url.pathname.startsWith("/repo/")) {
+      const name = decodeURIComponent(url.pathname.slice(6)).replace(/\/$/, "");
+      const db = env.DB;
+      const days = 90;
+      const repo = await db.prepare(
+        "SELECT repo_id, name, private, archived, last_synced, scan_enabled FROM repos WHERE name = ?"
+      ).bind(name).first();
+      if (!repo) return new Response("no such repo", { status: 404 });
+      const id = repo.repo_id;
+      const [series, commits, totals, metrics, refs, paths, alerts, first] = await db.batch([
+        db.prepare(`SELECT day, views, clones FROM traffic_daily
+            WHERE repo_id=? AND day > date('now','-' || ? || ' days') ORDER BY day`).bind(id, days),
+        db.prepare(`SELECT day, commits FROM commits_daily
+            WHERE repo_id=? AND day > date('now','-' || ? || ' days') AND commits>0 ORDER BY day`).bind(id, days),
+        db.prepare(`SELECT SUM(clones) clones, MAX(clones_unique) cpk,
+              SUM(views) views, MAX(views_unique) vpk
+            FROM traffic_daily WHERE repo_id=? AND day > date('now','-14 days')`).bind(id),
+        db.prepare(`SELECT stars, forks FROM repo_metrics_daily
+            WHERE repo_id=? ORDER BY day DESC LIMIT 1`).bind(id),
+        db.prepare(`SELECT referrer k, count, uniques, captured FROM referrers_snapshot
+            WHERE repo_id=? AND captured=(SELECT MAX(captured) FROM referrers_snapshot WHERE repo_id=?)
+            ORDER BY count DESC LIMIT 10`).bind(id, id),
+        db.prepare(`SELECT path k, count, uniques, captured FROM paths_snapshot
+            WHERE repo_id=? AND captured=(SELECT MAX(captured) FROM paths_snapshot WHERE repo_id=?)
+            ORDER BY count DESC LIMIT 10`).bind(id, id),
+        db.prepare(`SELECT number, secret_type, provider, validity, html_url, created_at
+            FROM secret_alerts WHERE repo_id=? AND state='open' ORDER BY created_at DESC`).bind(id),
+        db.prepare("SELECT MIN(day) d FROM traffic_daily WHERE repo_id=?").bind(id),
+      ]);
+      return new Response(repoPage({
+        repo, days, owner: env.GITHUB_OWNER,
+        series: series.results, commits: commits.results,
+        t: totals.results[0] || {}, m: metrics.results[0] || {},
+        refs: refs.results, paths: paths.results, alerts: alerts.results,
+        first: first.results[0]?.d || null,
+      }), { headers: { "content-type": "text/html;charset=utf-8" } });
+    }
+
     if (url.pathname === "/api/series") {
       const n = Math.min(365, Math.max(1, parseInt(url.searchParams.get("days") || "90", 10) || 90));
       const repo = url.searchParams.get("repo");
