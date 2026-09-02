@@ -559,6 +559,7 @@ td{padding:5px 8px 5px 0;border-bottom:1px solid var(--rule-soft)}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .bar{display:inline-block;height:8px;border-radius:2px;vertical-align:middle}
 .tag{font-size:9px;padding:1px 5px;border-radius:3px;background:var(--tag-bg);color:var(--tag-fg)}
+.desc{font-size:10px;color:var(--dim);margin-top:2px;max-width:34ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .note{font-size:10.5px;color:var(--dim);margin-top:8px;line-height:1.6}
 .themebtn{background:none;border:1px solid var(--rule);color:var(--dim);font:inherit;
 font-size:10px;letter-spacing:.5px;padding:3px 9px;border-radius:4px;cursor:pointer}
@@ -634,7 +635,8 @@ function page(d) {
   const sdays = dayAxis(d.series);
   const fleetMax = Math.max(1, ...Object.values(d.spark)
     .flatMap((rs) => rs.map((r) => r.clones || 0)));
-  const row = (t) => `<tr><td><a href="/repo/${encodeURIComponent(t.name)}" style="color:inherit">${esc(t.name)}</a>${t.private ? ' <span class="tag">priv</span>' : ""}</td>
+  const row = (t) => `<tr><td><a href="/repo/${encodeURIComponent(t.name)}" style="color:inherit">${esc(t.name)}</a>${t.private ? ' <span class="tag">priv</span>' : ""}${
+  t.description ? `<div class="desc" title="${esc(t.description)}">${esc(t.description.length > 78 ? t.description.slice(0, 77).trimEnd() + "\u2026" : t.description)}</div>` : ""}</td>
 <td style="width:80px">${spark(d.spark[t.name], sdays, fleetMax)}</td>
 <td style="width:38%"><span class="bar" style="background:var(--clones);width:${(t.clones / maxc) * 100}%"></span>
 <span class="bar" style="background:var(--views);width:${(t.views / maxc) * 100}%"></span></td>
@@ -845,11 +847,11 @@ export default {
             (SELECT sum(stars) FROM repo_metrics_daily WHERE day=(SELECT max(day) FROM repo_metrics_daily)) stars,
             (SELECT sum(forks) FROM repo_metrics_daily WHERE day=(SELECT max(day) FROM repo_metrics_daily)) forks
           FROM repos`).first(),
-      db.prepare(`SELECT r.name, r.private, sum(t.views) views, sum(t.clones) clones,
+      db.prepare(`SELECT r.name, r.private, r.description, sum(t.views) views, sum(t.clones) clones,
             max(t.views_unique) peak_view_uniq, max(t.clones_unique) peak_clone_uniq
           FROM traffic_daily t JOIN repos r ON r.repo_id=t.repo_id
           WHERE t.day > date('now','-15 days')
-          GROUP BY r.name, r.private HAVING sum(t.views)+sum(t.clones) > 0
+          GROUP BY r.name, r.private, r.description HAVING sum(t.views)+sum(t.clones) > 0
           ORDER BY clones DESC, views DESC LIMIT 15`).all(),
       db.prepare(`SELECT r.name, s.referrer, s.count, s.uniques
           FROM referrers_snapshot s JOIN repos r ON r.repo_id=s.repo_id
