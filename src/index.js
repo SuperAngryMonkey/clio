@@ -123,6 +123,72 @@ async function syncSecretAlerts(env, db, budget, repoId, full) {
   return { enabled: true, count: Array.isArray(alerts) ? alerts.length : 0 };
 }
 
+
+// ---- issues and pull requests ----------------------------------------------
+// ONE search call for the whole account: user:<owner> is:open. The per-repo
+// endpoint would cost a subrequest per repo, and the slice already spends
+// nearly all of the free tier's budget, so fleet-wide search is the only shape
+// that fits. It also covers private repos, given a token with repo scope.
+//
+// The field that matters is who opened it. An issue from a human other than
+// the owner is the strongest adoption signal this fleet can produce: clones
+// are mostly machines and downloads mostly mirrors, but nobody files an issue
+// against software they never ran.
+async function syncIssues(env, db, budget) {
+  const owner = env.GITHUB_OWNER;
+  if (!owner || !budget.take()) return { ok: false, count: 0 };
+  let res;
+  try {
+    const q = encodeURIComponent(`user:${owner} is:open`);
+    res = await fetch(`https://api.github.com/search/issues?q=${q}&per_page=100&sort=updated`, {
+      headers: {
+        Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "clio-worker",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+  } catch {
+    return { ok: false, count: 0 };
+  }
+  if (!res.ok) return { ok: false, count: 0 };
+  const body = await res.json();
+  const items = Array.isArray(body.items) ? body.items : [];
+  const ownerLc = owner.toLowerCase();
+
+  const stmts = [];
+  for (const it of items) {
+    const repo = String(it.repository_url || "").split("/").pop();
+    if (!repo) continue;
+    const login = it.user?.login || "";
+    const kind = it.user?.type === "Bot" || login.endsWith("[bot]") ? "bot"
+      : login.toLowerCase() === ownerLc ? "owner" : "external";
+    // Only ever link out to github.com; a crafted URL must not become a javascript: link.
+    const url = String(it.html_url || "").startsWith("https://github.com/") ? it.html_url : null;
+    stmts.push(db.prepare(`
+      INSERT INTO issues (repo, number, is_pr, title, author, author_kind, association,
+                          state, comments, html_url, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(repo, number) DO UPDATE SET
+        title=excluded.title, state='open', comments=excluded.comments,
+        association=excluded.association, updated_at=excluded.updated_at,
+        last_seen=datetime('now')`)
+      .bind(repo, it.number, it.pull_request ? 1 : 0, it.title ?? null, login,
+            kind, it.author_association ?? null, "open", it.comments ?? 0, url,
+            it.created_at ?? null, it.updated_at ?? null));
+  }
+  // Reconcile only when the result set is complete. If there are more open
+  // items than one page holds, an issue missing from this page is not closed,
+  // it is simply on page two -- closing it would be a false negative.
+  if ((body.total_count ?? 0) <= items.length) {
+    stmts.push(db.prepare(`UPDATE issues SET state='closed'
+      WHERE state='open' AND last_seen < datetime('now','-1 minute')`));
+  }
+  for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
+  await setState(db, "issues_synced", new Date().toISOString());
+  return { ok: true, count: items.length, total: body.total_count ?? 0 };
+}
+
 async function syncSlice(env) {
   const db = env.DB;
   const budget = new Budget(MAX_EXTERNAL);
@@ -255,7 +321,9 @@ async function syncSlice(env) {
       synced++;
     }
 
-    // Packages last: repos get first claim on the subrequest budget.
+    // Fleet-wide, then packages. Repos keep first claim on the budget; both of
+    // these are idempotent full refreshes, so a run that skips them loses nothing.
+    const iss = await syncIssues(env, db, budget);
     const pkgs = await syncPackages(env, db, budget);
 
     const next = (cursor + slice.length) % Math.max(repos.length, 1);
@@ -264,7 +332,7 @@ async function syncSlice(env) {
     await db.prepare(`UPDATE sync_runs SET finished=datetime('now'), ok=1,
         repos_synced=?, api_calls=?, slice_from=?, slice_to=? WHERE id=?`)
       .bind(synced, budget.used, from, to, runId).run();
-    return { ok: true, synced, packages: pkgs, calls: budget.used, from, to, next, fleet: repos.length };
+    return { ok: true, synced, issues: iss.count, packages: pkgs, calls: budget.used, from, to, next, fleet: repos.length };
   } catch (e) {
     await db.prepare(`UPDATE sync_runs SET finished=datetime('now'), ok=0,
         repos_synced=?, api_calls=?, error=? WHERE id=?`)
@@ -579,6 +647,21 @@ ${body}
 // The fleet page answers "which repo". This answers "what happened to it".
 // Same data, no new collection -- everything here was already being stored and
 // merely aggregated away.
+// Shared by the fleet page and the repo page so the two tables cannot drift.
+// Titles and logins are third-party text: always escaped, never trusted.
+function issueRows(list, showRepo) {
+  const fresh = (s) => s && Date.parse(s.replace(" ", "T") + "Z") > Date.now() - 864e5;
+  return `<table><tr>${showRepo ? "<th>repo</th>" : ""}<th>title</th><th>by</th>` +
+    `<th>opened</th><th class="num">comments</th><th></th></tr>` +
+    list.map((i) => `<tr>${showRepo ? `<td><a href="/repo/${encodeURIComponent(i.repo)}" style="color:inherit">${esc(i.repo)}</a></td>` : ""}
+<td>${fresh(i.first_seen) ? '<span class="tag" style="color:var(--bad)">new</span> ' : ""}${i.is_pr ? '<span class="tag">PR</span> ' : ""}${esc(i.title || "(untitled)")}</td>
+<td${i.author_kind === "external" ? ' style="color:var(--accent)"' : ""}>${esc(i.author || "-")}${i.author_kind === "bot" ? ' <span class="tag">bot</span>' : ""}</td>
+<td>${esc((i.created_at || "").slice(0, 10))}</td>
+<td class="num">${i.comments || 0}</td>
+<td>${i.html_url ? `<a href="${esc(i.html_url)}" style="color:var(--accent)">open</a>` : ""}</td></tr>`).join("") +
+    "</table>";
+}
+
 function repoPage(d) {
   const R = d.repo;
   const tile = (k, v, c) => `<div class="tile"><div class="k">${k}</div>` +
@@ -623,6 +706,8 @@ ${d.alerts.map((a) => `<tr><td>${esc(a.provider || a.secret_type || "-")}</td>
 <td>${esc((a.created_at || "").slice(0, 10))}</td>
 <td><a href="${esc(a.html_url || "#")}" style="color:var(--accent)">open</a></td></tr>`).join("")}</table>` : ""}
 
+<h2>OPEN ISSUES &mdash; ${d.issues.length}</h2>
+${d.issues.length ? issueRows(d.issues, false) : '<div class="note">No open issues or pull requests.</div>'}
 <div class="cols">
   <div><h2>REFERRERS</h2>${snapTable(d.refs, "referrers", "source")}</div>
   <div><h2>POPULAR PATHS</h2>${snapTable(d.paths, "paths", "path")}</div>
@@ -633,9 +718,15 @@ function page(d) {
   const maxc = Math.max(1, ...d.traffic.map((t) => t.clones || 0));
   const maxa = Math.max(1, ...d.active.map((a) => a.commits || 0));
   const sdays = dayAxis(d.series);
+  const issBy = {};
+  for (const i of d.issues) {
+    const e = (issBy[i.repo] ||= { n: 0, ext: 0 });
+    e.n++; if (i.author_kind === "external") e.ext++;
+  }
   const fleetMax = Math.max(1, ...Object.values(d.spark)
     .flatMap((rs) => rs.map((r) => r.clones || 0)));
   const row = (t) => `<tr><td><a href="/repo/${encodeURIComponent(t.name)}" style="color:inherit">${esc(t.name)}</a>${t.private ? ' <span class="tag">priv</span>' : ""}${
+  issBy[t.name] ? ` <span class="tag"${issBy[t.name].ext ? ' style="color:var(--accent)"' : ""}>${issBy[t.name].n} open</span>` : ""}${
   t.description ? `<div class="desc" title="${esc(t.description)}">${esc(t.description.length > 78 ? t.description.slice(0, 77).trimEnd() + "\u2026" : t.description)}</div>` : ""}</td>
 <td style="width:80px">${spark(d.spark[t.name], sdays, fleetMax)}</td>
 <td style="width:38%"><span class="bar" style="background:var(--clones);width:${(t.clones / maxc) * 100}%"></span>
@@ -675,6 +766,18 @@ ${d.alerts.map((a) => `<tr><td>${esc(a.name)}${a.private ? ' <span class="tag">p
 <td>${a.html_url ? `<a href="${esc(a.html_url)}" style="color:var(--accent)">open</a>` : ""}</td></tr>`).join("")}</table>
 <div class="note">Raised by GitHub, mirrored here &mdash; Clio does not scan. Secret values are never stored.
 <strong>validity=active means the credential still works: rotate first, close the alert after.</strong></div>` : ""}
+${(() => {
+  const ext = d.issues.filter((i) => i.author_kind === "external");
+  const own = d.issues.filter((i) => i.author_kind === "owner").length;
+  const bots = d.issues.filter((i) => i.author_kind === "bot").length;
+  return `<h2${ext.length ? ' style="color:var(--accent)"' : ""}>ISSUES &mdash; ${ext.length} from outside</h2>
+${ext.length ? issueRows(ext, true) : ""}
+<div class="note">${!d.issuesSynced
+  ? "<strong>Not collected yet</strong> &mdash; the issues search has not completed a run, so an empty list here means nobody has looked, not that nobody has filed. "
+  : ext.length ? "" : "Nobody but you has opened an issue or PR on any repo. "}${d.issuesSynced ? `${own} open by you${bots ? ` &middot; ${bots} by bots` : ""}. Last checked ${esc(d.issuesSynced.slice(0, 16).replace("T", " "))} UTC.` : ""}
+An issue from someone else is the strongest adoption signal here &mdash; clones are mostly machines,
+downloads mostly mirrors, but nobody files a bug against software they never ran.</div>`;
+})()}
 <h2>SECRET SCANNING</h2>
 <div class="note">${d.scan.watched || 0} repo(s) scanned by GitHub &middot; ${d.scan.unwatched || 0} not scanned${
   d.scan.unwatched_private ? ` (${d.scan.unwatched_private} private &mdash; scanning is free on public repos only)` : ""}${
@@ -768,7 +871,7 @@ export default {
       ).bind(name).first();
       if (!repo) return new Response("no such repo", { status: 404 });
       const id = repo.repo_id;
-      const [series, commits, totals, metrics, refs, paths, alerts, first] = await db.batch([
+      const [series, commits, totals, metrics, refs, paths, alerts, first, issues] = await db.batch([
         db.prepare(`SELECT day, views, clones FROM traffic_daily
             WHERE repo_id=? AND day > date('now','-' || ? || ' days') ORDER BY day`).bind(id, days),
         db.prepare(`SELECT day, commits FROM commits_daily
@@ -787,12 +890,15 @@ export default {
         db.prepare(`SELECT number, secret_type, provider, validity, html_url, created_at
             FROM secret_alerts WHERE repo_id=? AND state='open' ORDER BY created_at DESC`).bind(id),
         db.prepare("SELECT MIN(day) d FROM traffic_daily WHERE repo_id=?").bind(id),
+        db.prepare(`SELECT repo, number, is_pr, title, author, author_kind, comments,
+              html_url, created_at, first_seen FROM issues WHERE repo=? AND state='open'
+            ORDER BY author_kind='external' DESC, created_at DESC`).bind(repo.name),
       ]);
       return new Response(repoPage({
         repo, days, owner: env.GITHUB_OWNER,
         series: series.results, commits: commits.results,
         t: totals.results[0] || {}, m: metrics.results[0] || {},
-        refs: refs.results, paths: paths.results, alerts: alerts.results,
+        refs: refs.results, paths: paths.results, alerts: alerts.results, issues: issues.results,
         first: first.results[0]?.d || null,
       }), { headers: { "content-type": "text/html;charset=utf-8" } });
     }
@@ -829,6 +935,7 @@ export default {
     const db = env.DB;
     const seriesDays = 90;
     const hz = await health(env, db);
+    const issuesSynced = await getState(db, "issues_synced", "");
     const sec = await db.batch([
       db.prepare(`SELECT r.name, r.private, a.number, a.secret_type, a.provider,
             a.validity, a.html_url, a.created_at
@@ -839,6 +946,9 @@ export default {
             SUM(CASE WHEN scan_enabled=0 THEN 1 ELSE 0 END) unwatched,
             SUM(CASE WHEN scan_enabled=0 AND private=1 THEN 1 ELSE 0 END) unwatched_private
           FROM repos WHERE archived=0`),
+      db.prepare(`SELECT repo, number, is_pr, title, author, author_kind, comments,
+            html_url, created_at, first_seen FROM issues WHERE state='open'
+          ORDER BY author_kind='external' DESC, created_at DESC`),
     ]);
     const [inv, traffic, referrers, active, cold, run, fleet, series, commitSeries, sparkRows, dlSeries, pkgRows] = await Promise.all([
       db.prepare(`SELECT count(*) total,
@@ -900,7 +1010,7 @@ export default {
       perRun: env.REPOS_PER_RUN || "8", fleet: fleet?.v ?? "?",
       series: series.results, commitSeries: commitSeries.results, spark, seriesDays,
       dlSeries: dlSeries.results, packages: pkgRows.results, hz,
-      alerts: sec[0].results, scan: sec[1].results[0] || {},
+      alerts: sec[0].results, scan: sec[1].results[0] || {}, issues: sec[2].results, issuesSynced,
     }), { headers: { "content-type": "text/html;charset=utf-8" } });
   },
 };

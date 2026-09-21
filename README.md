@@ -38,6 +38,7 @@ devDependency.
 - **Fleet** — commits and staleness across every repo, public and private
 - **Activity** — the same numbers as a daily series, for as far back as Clio has been running
 - **Packages** — PyPI downloads per day, so installs sit beside the clones that are not installs
+- **Issues** — every open issue and PR across the fleet, with the ones from people other than you called out first
 
 These are deliberately separate. Popularity only means anything for public repos
 with an audience; activity applies to all of them. For a single-operator fleet
@@ -207,7 +208,7 @@ configured.
 | Variable | Default | What it does |
 |---|---|---|
 | `GITHUB_OWNER` | — | Whose repos to collect |
-| `REPOS_PER_RUN` | `7` | Fleet slice per cron run; see the subrequest cap above |
+| `REPOS_PER_RUN` | `6` | Fleet slice per cron run. Each repo costs about six calls, and the fleet-wide issues and package lookups need room after the slice, all under the 45-call guard |
 | `REQUIRE_ACCESS` | `1` | Refuse requests that did not come through Cloudflare Access |
 | `PYPI_PACKAGES` | *(empty)* | Comma-separated PyPI project names |
 | `ALERT_WEBHOOK` | *(empty)* | POST target for collector alerts |

@@ -1,5 +1,28 @@
 # Changelog
 
+## Issues panel (2026-09-21)
+
+**Issues and PRs across the fleet**, from one search call per run
+(`user:<owner> is:open`) rather than one call per repo, which would not fit the
+free tier's budget. Migration 0004 adds `issues` with `author_kind` —
+owner, external or bot — because who opened it is the entire point. An issue
+from someone other than the owner is the strongest adoption signal available:
+clones are mostly machines and downloads mostly mirrors, but nobody files a
+bug against software they never ran. External issues are listed first and
+highlighted; each repo gets an open-count tag in HOT and a full list on its
+detail page. Reconciliation to closed only happens when a search returned the
+complete set, so a second page is never mistaken for resolved issues.
+
+**Never-collected is distinguished from empty.** The first build told the
+dashboard "nobody has opened an issue" when the search had simply not run.
+It now records a successful run and says "not collected yet" until one exists.
+
+**`REPOS_PER_RUN` lowered from 7 to 6.** The fleet grew to 37 and the
+secret-alerts lookup added a call per repo, so seven repos alone reached the
+45-call guard. That starved the fleet-wide lookups entirely and could cut the
+last repo in a slice short mid-collection. A full cycle now takes about seven
+runs instead of six — roughly 21 hours, well inside GitHub's 14-day window.
+
 ## Package downloads, collector alerting, light theme (2026-08-22)
 
 **Package downloads.** Migration 0002 adds `packages` and
