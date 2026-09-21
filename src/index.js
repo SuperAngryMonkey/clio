@@ -11,6 +11,11 @@
  * in front of the Worker - see REQUIRE_ACCESS below.
  */
 
+// Version comes from package.json so the footer and the release tag cannot
+// disagree. wrangler bundles JSON imports natively.
+import pkg from "../package.json";
+
+
 const API = "https://api.github.com";
 const MAX_EXTERNAL = 45; // hard stop below the free-plan ceiling of 50
 
@@ -805,7 +810,7 @@ ${d.active.map((a) => `<tr><td>${esc(a.name)}</td><td style="width:45%"><span cl
 ${d.cold.map((c) => `<tr><td>${esc(c.name)}${c.private ? ' <span class="tag">priv</span>' : ""}</td><td class="num" style="color:${c.days_idle > 80 ? "var(--clones)" : "var(--warn)"}">${c.days_idle}d</td></tr>`).join("")}</table></div>
 </div>
 <div class="note" style="margin-top:26px;border-top:1px solid #1e1e26;padding-top:12px">
-Cloudflare Worker + D1 &middot; collector every 3h, ${d.perRun} repos per slice, fleet ${d.fleet}
+clio v${pkg.version} &middot; Cloudflare Worker + D1 &middot; collector every 3h, ${d.perRun} repos per slice, fleet ${d.fleet}
 &middot; <a href="/sync" style="color:var(--accent)">sync next slice now</a></div>
 </div><script>
 document.getElementById("tt").addEventListener("click",function(){

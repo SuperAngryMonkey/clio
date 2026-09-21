@@ -1,6 +1,14 @@
 # Changelog
 
-## Issues panel (2026-09-21)
+## 0.3.0 — 2026-09-21
+
+Everything since the move to Cloudflare. Clio stopped being a clone counter:
+it now collects package downloads and open issues alongside traffic, alerts
+when its own collector stalls, mirrors GitHub's secret-scanning alerts, and
+has per-repo detail pages, a light theme, and daily time series that outlive
+GitHub's fourteen-day window. The dated sections below are the detail.
+
+### Issues panel (2026-09-21)
 
 **Issues and PRs across the fleet**, from one search call per run
 (`user:<owner> is:open`) rather than one call per repo, which would not fit the
@@ -23,7 +31,7 @@ secret-alerts lookup added a call per repo, so seven repos alone reached the
 last repo in a slice short mid-collection. A full cycle now takes about seven
 runs instead of six — roughly 21 hours, well inside GitHub's 14-day window.
 
-## Package downloads, collector alerting, light theme (2026-08-22)
+### Package downloads, collector alerting, light theme (2026-08-22)
 
 **Package downloads.** Migration 0002 adds `packages` and
 `package_downloads_daily`, keyed `(name, day)` and upserted with MAX like
@@ -63,7 +71,7 @@ and the header toggle persists an override.
 "Why not just use the Insights tab" section: GitHub discards traffic after 14
 days with no export, and clone counts mostly are not people.
 
-## Time series (2026-08-03)
+### Time series (2026-08-03)
 
 Added, cloudflare branch:
 - GET /api/series?days=N[&repo=NAME] returns the daily series as JSON. Fleet
@@ -78,4 +86,16 @@ already keyed (repo_id, day); only the presentation layer was summing them
 away. Missing days render as gaps rather than zeros, because at REPOS_PER_RUN
 per 3h a full fleet cycle takes about 1.5 days and early per-repo rows are
 unevenly dense. A day present with value 0 is a real zero and is drawn.
+
+## 0.2.0 — Cloudflare Worker + D1
+
+Ported from the Debian/LXC build to a single Cloudflare Worker with D1, behind
+Cloudflare Access, on the free tier. Collection is chunked across runs because
+the free plan allows 50 external subrequests per invocation. The self-hosted
+build survives on the `debian-lxc` branch.
+
+## 0.1.0 — first release
+
+Debian/LXC build: Postgres, a systemd-timed collector, and a Flask dashboard
+behind Basic auth.
 
